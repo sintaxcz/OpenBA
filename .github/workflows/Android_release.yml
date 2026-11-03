@@ -1,0 +1,114 @@
+name: Release Android Only
+# Builds the release flavour for the Android platform, packages the application,
+# and automatically signs the Android APK using a generated default key.
+#
+# Dry run: a manual dispatch (Actions > Release > Run workflow) runs the Android build;
+# the resulting APK package is available in the run's artifacts. 
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+env:
+  BUILD_JOBS: 4
+  CCACHE_DIR: ${{ github.workspace }}/.ccache
+  CCACHE_BASEDIR: ${{ github.workspace }}
+  CCACHE_COMPRESS: "true"
+  CCACHE_MAXSIZE: 400M
+  CCACHE_LAUNCHERS: -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_OBJCXX_COMPILER_LAUNCHER=ccache
+jobs:
+  version:
+    name: Version and notes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      tag: ${{ steps.v.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: CMake VERSION, tag check, CHANGELOG section
+        id: v
+        run: |
+          VER="$(sed -nE 's/^project\([^)]*VERSION ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' CMakeLists.txt)"
+          [ -n "$VER" ] || { echo "no project(... VERSION x.y.z) in CMakeLists.txt"; exit 1; }
+          echo "CMake VERSION $VER"
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+            [ "$TAG" = "v$VER" ] || { echo "tag $TAG does not match CMake VERSION $VER (expected v$VER)"; exit 1; }
+          else
+            TAG="v$VER"
+          fi
+          python3 tools/release/changelog_section.py "$VER" > notes.md
+          echo "--- release notes ($TAG) ---"; cat notes.md
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-notes
+          path: notes.md
+
+  android:
+    name: Android arm64 apk (signed with default key)
+    needs: version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      ANDROID_NDK_PIN: "30.0.16248370"
+      ANDROID_CMAKE_PIN: "3.31.6"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+          persist-credentials: false
+      - name: Packages
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q ninja-build ccache apksigner
+      - uses: actions/setup-java@v4
+        with:
+          distribution: zulu
+          java-version: 17
+      - uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-release-android-${{ github.sha }}
+          restore-keys: ccache-release-android-
+      - name: Android SDK packages
+        run: |
+          # OPRAVA CESTY: Přidáme zabudovaný sdkmanager do dočasné PATH, aby ho systém našel
+          export PATH=$ANDROID_HOME/cmdline-tools/latest/bin:$PATH
+          sdkmanager --install "ndk;$ANDROID_NDK_PIN" "cmake;$ANDROID_CMAKE_PIN" "build-tools;36.0.0"
+          echo "ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/$ANDROID_NDK_PIN" >> $GITHUB_ENV
+      - name: Build the apk (release = the perf flavour, unsigned)
+        run: |
+          export CMAKE_LAUNCHER_ARGS="$CCACHE_LAUNCHERS"
+          tools/android.sh build release
+      - name: Sign APK with default key
+        run: |
+          # Vyhledáme vygenerované unsigned APK v gradle výstupech
+          UNSIGNED_APK=$(find android/app/build/outputs/apk/release/ -name "*.apk" | head -n 1)
+          if [ -z "$UNSIGNED_APK" ]; then
+            echo "Unsigned APK not found!"
+            exit 1
+          fi
+          
+          # Vygenerujeme dočasný testovací klíč na serveru
+          keytool -genkey -v -keystore test.keystore -alias test_alias -keyalg RSA -keysize 2048 -validity 10000 -storepass password123 -keypass password123 -dname "CN=Android Debug, O=Android, C=US"
+          
+          # Podepíšeme APK pomocí apksigner
+          apksigner sign --ks test.keystore --ks-key-alias test_alias --ks-pass pass:password123 --key-pass pass:password123 --out app-release-signed.apk "$UNSIGNED_APK"
+          echo "APK successfully signed."
+      - name: ccache statistics
+        if: always()
+        run: ccache -s
+      - uses: actions/upload-artifact@v4
+        with:
+          name: package-android
+          path: app-release-signed.apk
+          if-no-files-found: error
