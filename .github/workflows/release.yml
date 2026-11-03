@@ -13,8 +13,6 @@ name: Release
 # Nothing here needs the game (AGENTS.md section 1): the Windows gate and the serializer check stay
 # the maintainer's steps before the tag is pushed.
 on:
-  push:
-    tags: ['v*']
   workflow_dispatch:
 permissions:
   contents: read
