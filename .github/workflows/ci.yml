@@ -13,7 +13,6 @@ name: CI
 # of the first's: 24 hits in 2998 on a cold run. Without it the objects' debug info names whichever
 # build directory compiled them first, which nothing here reads.
 on:
-    branches: [main]
   workflow_dispatch:
 permissions:
   contents: read
