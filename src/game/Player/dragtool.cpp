@@ -7,8 +7,8 @@
 // Sub-classes: BridgeTool, RoadTool, WallTool, etc.
 // DragTool::OnKey implements the shared drag lifecycle:
 //   1. key==0 (key up): close dialog if open, check Released -> reset dragState
-//   2. key!=0 && dragState==0 (idle): check Pressed -> pick start cell, open dialog
-//   3. key!=0 && dragState==1 (dragging): update end cell, call virtual BuildPath,
+//   2. key!=0 && dragState==Idle: check Pressed -> pick start cell, open dialog
+//   3. key!=0 && dragState==Dragging: update end cell, call virtual BuildPath,
 //      update UI via operator_impl_fc60, handle release -> commit or cancel
 //
 // Decompiled from Application-x64.exe.
@@ -27,6 +27,7 @@
 #include "object/Internal.h"   // ENDGAME B.3.3 step 6B
 #include "ui/UserInterface.h"   // ENDGAME B.3.6 UI callers (K4)
 #include "input/Input.h"        // ENDGAME B.3.7 callers (K3)
+#include "Game/inputbindings.h"   // GameKey (the KeyMap binding ids)
 #include "Object/exe_type.h"   // DEFINE_EXE_ABSTRACT_TYPE
 #include "Game/PlayerToolManager.h"
 #include "Component/ToolbarDescription.h"
@@ -88,11 +89,11 @@ static inline const Input::KeyMap* GetKeyMap() {
 //   key != 0: key-down / held event (mouse button pressed/held)
 //
 // State machine:
-//   dragState==0 (idle):
+//   dragState==Idle:
 //     On key-down with Pressed(0,5): pick start cell, set startCell=endCell,
-//     if valid: set dragState=1, open dialog
+//     if valid: set dragState=Dragging, open dialog
 //
-//   dragState==1 (dragging):
+//   dragState==Dragging:
 //     Ensure dialog is open, pick current cell, update endCell
 //     If endCell changed: play tick, update lastEndCell
 //     Call virtual CalcCost (+0x70) for segment count + path type
@@ -122,16 +123,16 @@ char DragTool::OnKey(char key) {
         // ENDGAME B.3.7: fn_KeyMap_Released was bound only to the unregistered exe
         // slot 0x1401528f0 and was always null, so this reset never ran; the member
         // call restores retail's key-up path (CALLER_SURFACE.md 6, defect 1).
-        if (keyMap->Released(0, 5)) {
+        if (keyMap->Released(0, ToUnderlying(GameKey::MouseLeft))) {
             // Reset both dragState and singleClick (original does MOV word [self+0x28], 0)
-            dragState = 0;
+            dragState = DragState::Idle;
             singleClick = 0;
         }
     }
-    else if (dragState == 0) {
+    else if (dragState == DragState::Idle) {
         // ---- Idle state: check for drag start ----
         // KeyMap::Pressed at dispatch 0x140151758 — checks if button newly pressed
-        bool pressed = keyMap->Pressed(0, 5);
+        bool pressed = keyMap->Pressed(0, ToUnderlying(GameKey::MouseLeft));
         if (pressed) {
             int cell = PlayerRay_ScreenToCell_101270(keyMap);
             startCell = cell;
@@ -139,7 +140,7 @@ char DragTool::OnKey(char key) {
 
             if (cell >= 0) {
                 // Begin dragging: set state, open placement dialog
-                dragState = 1;
+                dragState = DragState::Dragging;
                 singleClick = 0;
                 UI::DialogInstance* retval;
                 // Original: FUN_1400ff9e0(*(longlong**)(self+0x10), &retval, *(self+0x20))
@@ -224,7 +225,7 @@ char DragTool::OnKey(char key) {
         if (singleClick != 0) {
             // Single-click mode: waiting for second click to confirm placement.
             // Original uses KeyMap::Pressed (dispatch 0x140151758).
-            bool pressed = keyMap->Pressed(0, 5);
+            bool pressed = keyMap->Pressed(0, ToUnderlying(GameKey::MouseLeft));
             if (pressed) {
                 if (currentCell < 0) {
                     // Invalid target cell
@@ -242,7 +243,7 @@ char DragTool::OnKey(char key) {
 
                 // Reset both dragState and singleClick, close dialog
                 // Original: MOV word ptr [RDI + 0x28], 0x0
-                dragState = 0;
+                dragState = DragState::Idle;
                 singleClick = 0;
                 dialogPtr->CloseToolDialog();
             }
@@ -251,9 +252,9 @@ char DragTool::OnKey(char key) {
             // Original checks: Released(0,5) || GetValue(0,5)==0
             // ENDGAME B.3.7: Released used to be always false (see the key-up
             // branch above); it now reports the release itself.
-            bool released = keyMap->Released(0, 5);
+            bool released = keyMap->Released(0, ToUnderlying(GameKey::MouseLeft));
             if (!released) {
-                short value = keyMap->GetValue(0, 5);
+                short value = keyMap->GetValue(0, ToUnderlying(GameKey::MouseLeft));
                 released = (value == 0);
             }
 
@@ -279,7 +280,7 @@ char DragTool::OnKey(char key) {
                     // Close dialog and reset dragState
                     // Original: MOV byte ptr [RDI + 0x28], 0x0 (only dragState, keeps singleClick)
                     dialogPtr->CloseToolDialog();
-                    dragState = 0;
+                    dragState = DragState::Idle;
                 }
             }
         }
@@ -299,8 +300,8 @@ char DragTool::OnKey(char key) {
 // The Tool_Ret0 stub in that slot meant a right-click mid-drag tore the tool down
 // with the cost dialog still open — the "icon left on screen" dismiss bug.
 char DragTool::OnCancel() {
-    if (dragState == 0) return 0;
-    dragState = 0;
+    if (dragState == DragState::Idle) return 0;
+    dragState = DragState::Idle;
     singleClick = 0;   // retail: MOV word ptr [self+0x28], 0
     PlayerToolManager* owner = dialogPtr;
     if (owner && owner->field_0x00) {

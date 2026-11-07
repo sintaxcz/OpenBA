@@ -107,6 +107,7 @@
 #include "engine/MainLoop.h"                  // ENDGAME B.3.7 callers (K2)
 #include "audio/Audio.h"                      // ENDGAME B.3.7 callers (K4)
 #include "input/Input.h"                      // ENDGAME B.3.7 callers (K3)
+#include "Game/inputbindings.h"   // GameKey (the KeyMap binding ids)
 #include "graphics/Mesh.h"               // ENDGAME B.3.9 SS2: MeshInstance::_rootOnlyUpdates
 #include "graphics/ParticleInstance.h"   // ENDGAME B.3.9 SS2: ParticleInstance::_frameIndex
 #include "io/FileSystem.h"               // ENDGAME B.3.9 SS2: IO::FileSystem::_singleton
@@ -517,6 +518,8 @@ enum SimPhase {
     kPhPairCache = 0, kPhAnimation, kPhEntityList, kPhWeather,
     kPhCitizenList, kPhPostSim, kPhWholeUpdate, kPhCount
 };
+static_assert(static_cast<int>(SamplerTag::PairCache) + kPhPostSim == static_cast<int>(SamplerTag::PostSim),
+              "SamplerTag phase tags are PairCache + SimPhase");
 const char* const kPhaseName[kPhCount] = {
     "PairCache", "Animation", "EntityList", "Weather",
     "CitizenList", "PostSim(UI/cam/audio)", "TOTAL Update"
@@ -555,11 +558,11 @@ inline double QpcMs(long long ticks) {
 struct PhaseTimer {
     int ph; long long t0; bool on;
     explicit PhaseTimer(int p) : ph(p), t0(0), on(SimProfOn()) {
-        g_samplerTag = 2 + p;   // [Sampler] phase tag (src/diag/sampler.h)
+        g_samplerTag = static_cast<int>(SamplerTag::PairCache) + p;   // [Sampler] phase tag: PairCache + SimPhase
         if (on) t0 = QpcNow();
     }
     ~PhaseTimer() {
-        g_samplerTag = 1;
+        g_samplerTag = static_cast<int>(SamplerTag::UpdateNoPhase);
         if (!on || !g_qpcFreq) return;
         const double s = (double)(QpcNow() - t0) / (double)g_qpcFreq;
         g_phSec[ph] += s;
@@ -665,8 +668,12 @@ bool GameUpdateLoop::Update(const System::Time& timeRef) {
     // [SIMPROF] whole-Update stamp + deterministic speed override (both diagnostic-only)
     const bool simProf = SimProfOn();
     const long long frameT0 = simProf ? QpcNow() : 0;
-    g_samplerTag = 1;   // [Sampler] inside Update
-    struct SamplerTagReset { ~SamplerTagReset() { g_samplerTag = 0; } } samplerTagReset;
+    g_samplerTag = static_cast<int>(SamplerTag::UpdateNoPhase);   // [Sampler] inside Update
+    struct SamplerTagReset {
+        ~SamplerTagReset() {
+            g_samplerTag = static_cast<int>(SamplerTag::OutsideUpdate);
+        }
+    } samplerTagReset;
     ApplyForceSpeed(m_toolManager);
     // [SHOWROOM] hold the world paused while the showroom frames and shoots its buildings,
     // so every shot sees the same season, weather and sun.
@@ -1274,7 +1281,7 @@ post_simulation:
     {
         const Input::KeyMap* keyMap = Input::Configuration::_singleton->_keyMap;
 
-        if (keyMap->Pressed(0, 0x21)) {
+        if (keyMap->Pressed(0, ToUnderlying(GameKey::ScreenshotNoUI))) {
             m_quickSavePressed = 1;
         }
 
@@ -1318,7 +1325,7 @@ post_simulation:
             }
         }
 
-        if (keyMap->Pressed(0, 0x22)) {
+        if (keyMap->Pressed(0, ToUnderlying(GameKey::Screenshot))) {
             m_quickLoadPressed = 1;
         }
         TRACE("[GameUpdateLoop::Update] quicksave/quickload checked (save=%d, load=%d)\n",
@@ -2027,8 +2034,8 @@ void GameUpdateLoop::Startup() {
 
     // Set fullscreen fade
     TRACE("[GameUpdateLoop::Startup] setting fullscreen fade...\n");
-    m_userInterface->SetFullscreenFade(true, 0xFF000000, true);
-    m_userInterface->SetFullscreenFade(false, 0xFF000000, false);
+    m_userInterface->SetFullscreenFade(true, System::kColorBlack, true);
+    m_userInterface->SetFullscreenFade(false, System::kColorBlack, false);
     TRACE("[GameUpdateLoop::Startup] fullscreen fade set\n");
 
     TRACE("[GameUpdateLoop::Startup] calling EntityUI::Startup...\n");

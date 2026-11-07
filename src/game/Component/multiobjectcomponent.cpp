@@ -37,7 +37,7 @@ void MultiObjectComponent::OnRemove() {
         ComponentEntity* entityPtr = children[i].Get();
         EntityList* entityList = GameUpdateLoop::_singleton->m_entityList;   // +0xE8
 
-        if (entityPtr != nullptr && ((entityPtr->_entityFlags >> 10) & 1) == 0) {
+        if (entityPtr != nullptr && (entityPtr->_entityFlags & Bits(ComponentFlags::MarkedForRemoval)) == 0) {
             entityPtr->MarkForRemoval();   // 0x1400c2ea0
 
             if (entityList) {
@@ -102,9 +102,9 @@ static void MultiObjectComponent_PopulateStateTable() {
     using namespace ::ControllerLive;
     auto& t = MultiObjectCtrlDispatch::table;
     if (t.count != 0) return;                      // idempotent
-    TableRegisterState(t, 2, &MultiObjectEnterState2,
+    TableRegisterState(t, BuildingState::Built, &MultiObjectEnterState2,
                        nullptr, nullptr, nullptr);
-    TableAddTransition(t, 3, nullptr);
+    TableAddTransition(t, BuildingState::Demolish, nullptr);
 }
 static const bool s_multiObjectStateTableBuilt = (MultiObjectComponent_PopulateStateTable(), true);
 

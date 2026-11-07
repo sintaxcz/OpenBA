@@ -23,7 +23,7 @@
 //   g_pGameWorldSingleton (DAT_1401c3dd8): +0xf0 = entity-list pair, +0xf8 = map-grid
 //     (int* dim at [0]), +0xd8 = Random.
 //
-//   GrowUp success epilogue (both branches): *self → +0x30=-1, +0x54|=4, +0xb0=0,
+//   GrowUp success epilogue (both branches): *self → +0x30=-1, +0x54|=4, +0xb0=0 (lastErrand None),
 //     stamp Time(DAT_1401721fc * desc_walktime) into citizen+0x60, return 1.
 //   GrowUp early/adult branch (age > _maxAge 15.0): tail-call LongTermPlan, set
 //     param_1+0x2c = 4 (next-state), return 1.
@@ -274,7 +274,7 @@ extern "C" void* CitizenAI_Entity_impl_f230(const CitizenBehavior* param_1, Comp
             if (ix < 0) ix = 0; if (dim <= ix) ix = dim - 1;
             if (iy < 0) iy = 0; if (dim <= iy) iy = dim - 1;
             uint32_t cell = static_cast<uint32_t>(dim * iy + ix);
-            uint64_t reachable = mapGrid->ValidateCell(0xe1f, param_3, cell);
+            uint64_t reachable = mapGrid->ValidateCell(PathBits::Walk, param_3, cell);
             if (static_cast<char>(reachable) != '\0') {
                 int cost = mapGrid->CalcDistance(param_3, cell);
                 if (cost < bestCost) {
@@ -430,8 +430,8 @@ void CitizenComponent::LongTermPlan() {
 
         // commit the action-state flags on the citizen and run the executor.
         field_0x30 = -1;
-        statusFlags |= 4;
-        field_0xB0 = 0;
+        statusFlags |= Bits(CitizenStatus::TaskDone);
+        lastErrand = CitizenErrand::None;
 
         System::Time timeStamp{};
         RtSystem_Time_Ctor(&timeStamp, 0.0f);
@@ -474,7 +474,7 @@ uint64_t CitizenAIComponent::State_GrowUp() {
         // Citizen's own storage is non-empty (QueryCount >= 1) → defer to LongTermPlan
         // (the haul-to-storage leg) and queue next state 4. (decompile `else`).
         citizen->LongTermPlan();
-        queuedState = 4;
+        queuedState = CitizenAIState::GetHealthItem;
         return 1;  // low byte 1
     }
 
@@ -482,7 +482,7 @@ uint64_t CitizenAIComponent::State_GrowUp() {
     // find the best food source via dd30, then scan its storage for an eatable item.
     System::Time cd{};
     RtSystem_Time_Ctor(&cd, s_walkScale);
-    timers[4] = cd;
+    timers[static_cast<int32_t>(CitizenAIState::GetHealthItem)] = cd;
 
     ComponentEntity* resEntity = citizen->home.Get();
     uint32_t bGoal;
@@ -608,9 +608,9 @@ uint64_t CitizenAIComponent::State_GrowUp() {
 
                     // success epilogue: flag triplet on the citizen.
                     CitizenComponent* cz = citizen.Get();
-                    cz->statusFlags |= 4;
+                    cz->statusFlags |= Bits(CitizenStatus::TaskDone);
                     cz->field_0x30 = -1;
-                    cz->field_0xB0 = 0;
+                    cz->lastErrand = CitizenErrand::None;
 
                     // walk-time-scaled cooldown: desc = cz->_description, require
                     // CitizenDescription (DWORD_1401c7190); wt = foodInterval * DAT_1401721fc.
@@ -622,7 +622,7 @@ uint64_t CitizenAIComponent::State_GrowUp() {
                     }
                     System::Time cd2{};
                     RtSystem_Time_Ctor(&cd2, wt * s_walkScale);
-                    timers[4] = cd2;
+                    timers[static_cast<int32_t>(CitizenAIState::GetHealthItem)] = cd2;
 
                     return 1;  // low byte 1
                 }

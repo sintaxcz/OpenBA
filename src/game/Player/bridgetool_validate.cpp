@@ -46,7 +46,7 @@ inline Map* MapGrid() {
 
 // 1 << (terrainType & 0x1f) — the bit each mask is tested against.
 inline uint32_t TerrainBit(const MapCell* cell) {
-    return 1u << (cell->terrainType & 0x1f);
+    return Bits(PathBitOf(cell->terrainType));
 }
 
 // The pending/queued-cell BST at Map +0xE8 (AvlNode28: key +0x00, left +0x10,
@@ -63,6 +63,13 @@ bool PendingContains(const Map* mapGrid, int cellIdx) {
     }
     return false;
 }
+
+// ValidatePath's phase-1 span scan (0x1400fb2d0): bank -> water -> bank.
+enum class SpanScan : int {
+    NearBank = 0,   // approach terrain before the body
+    Body     = 1,   // the body (water) cells
+    FarBank  = 2,   // approach terrain after the body
+};
 
 }  // namespace
 
@@ -130,7 +137,7 @@ uint32_t BridgeTool::ValidatePath(int startCell, int endCell, int* outLength) co
     if (endRow < startRow) { minRow = endRow; maxRow = startRow; }
 
     // ---- Phase 1: bank -> water -> bank state machine over the span ----
-    int  state          = 0;   // 0 = near bank, 1 = body, 2 = far bank
+    SpanScan state      = SpanScan::NearBank;
     int  approachNear   = 0;
     int  bodyCount      = 0;
     int  approachFar    = 0;
@@ -147,9 +154,9 @@ uint32_t BridgeTool::ValidatePath(int startCell, int endCell, int* outLength) co
                         result = 0;                     // cell already occupied
                     const uint32_t bit = TerrainBit(cell);
 
-                    if (state == 0) {
+                    if (state == SpanScan::NearBank) {
                         if (maskBody & bit) {
-                            state = 1;
+                            state = SpanScan::Body;
                             sawRequired = sawRequired || ((maskRequired & bit) != 0);
                             bodyCount++;
                         } else if (maskApproach & bit) {
@@ -157,9 +164,9 @@ uint32_t BridgeTool::ValidatePath(int startCell, int endCell, int* outLength) co
                         } else {
                             result = 0;
                         }
-                    } else if (state == 1) {
+                    } else if (state == SpanScan::Body) {
                         if (maskApproach & bit) {
-                            state = 2;
+                            state = SpanScan::FarBank;
                             approachFar++;
                         } else if (maskBody & bit) {
                             sawRequired = sawRequired || ((maskRequired & bit) != 0);
@@ -167,7 +174,7 @@ uint32_t BridgeTool::ValidatePath(int startCell, int endCell, int* outLength) co
                         } else {
                             result = 0;
                         }
-                    } else {  // state == 2
+                    } else {  // SpanScan::FarBank
                         if (maskApproach & bit) approachFar++;
                         else                    result = 0;
                     }
@@ -175,7 +182,7 @@ uint32_t BridgeTool::ValidatePath(int startCell, int endCell, int* outLength) co
                 savedBodyCount = bodyCount;
             }
         }
-        spanOk = (state == 2) && (approachNear != 0) && (bodyCount != 0) && (approachFar != 0);
+        spanOk = (state == SpanScan::FarBank) && (approachNear != 0) && (bodyCount != 0) && (approachFar != 0);
     }
     if (!spanOk)      result = 0;
     if (!sawRequired) result = 0;
@@ -232,9 +239,9 @@ uint32_t BridgeTool::ValidatePath(int startCell, int endCell, int* outLength) co
                     result = 0;
 
                 const bool free = (cell->blocker == nullptr)
-                               && ((bit & 2) == 0)
-                               && ((bit & 1) == 0)
-                               && (static_cast<int8_t>(cell->field_0x2A) == -1);
+                               && ((bit & Bits(PathBits::Fast)) == 0)
+                               && ((bit & Bits(PathBits::Faster)) == 0)
+                               && (cell->field_0x2A == MapCell::kNoRoadBatch);
                 if (!free || PendingContains(mapGrid, idx))
                     result = 0;
             }

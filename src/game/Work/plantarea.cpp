@@ -87,7 +87,7 @@ static WorkCellSetNode* FindCell(WorkCellSetNode* node, int key) {
 static int SettledSlots(const CropFieldComponent* crop) {
     int n = 0;
     for (int i = 0; i < crop->slots._size; i++) {
-        if (crop->slots._data[i].state != 0) n++;
+        if (static_cast<CropSlotState>(crop->slots._data[i].state) != CropSlotState::Empty) n++;
     }
     return n;
 }
@@ -197,12 +197,12 @@ int PlantArea::Execute(CitizenComponent** citizenRef, System::Time* /*context*/)
             }
 
             // Check pathfinding
-            int nearestCell = mapGrid->FindCell(srcCellIdx, citizenGridCell, 0xe0f);
+            int nearestCell = mapGrid->FindCell(srcCellIdx, citizenGridCell, PathBits::Walk & ~PathBits::Obstacle);
             if (nearestCell < 0) {
                 continue;
             }
 
-            bool canPath = static_cast<uint8_t>(mapGrid->ValidateCell(0xe1f, citizenGridCell, nearestCell));   // the door read AL
+            bool canPath = static_cast<uint8_t>(mapGrid->ValidateCell(PathBits::Walk, citizenGridCell, nearestCell));   // the door read AL
             if (!canPath) {
                 continue;
             }
@@ -254,12 +254,12 @@ int PlantArea::Execute(CitizenComponent** citizenRef, System::Time* /*context*/)
             Profession* workEnt = nullptr;
             GetTarget(&workEnt);
 
-            citizenEnt->statusFlags |= 4;
+            citizenEnt->statusFlags |= Bits(CitizenStatus::TaskDone);
             citizenEnt->field_0x30 = priority;
-            citizenEnt->field_0xB0 = 0;
+            citizenEnt->lastErrand = CitizenErrand::None;
 
             if (workEnt == citizenEnt->profession && priority >= 0) {
-                citizenEnt->happinessFlags |= 0x20000;
+                citizenEnt->happinessFlags |= CitizenComponent::kHappinessWorkedOwnProfession;
             }
 
             // Insert primary cell into the set: {cell, citizen}

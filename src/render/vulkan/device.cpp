@@ -612,23 +612,26 @@ void ApplyEngineSettingsChange(Video::Device* dev) {
 // faithful Finish and the render thread's packets (dx11 keeps two; with ext.render_pipe on from boot every
 // present is a packet's anyway). The device is not lost: the recovery's teardown and rebuild are real.
 bool ForceDeviceLostThisPresent() {
-    static int wanted = -2;   // -2 = not yet read, -1 = disabled, -3 = on request (`bgsave`)
+    // A DeviceLostDrive::Wanted mode, or > 0: the present # to inject on.
+    static int wanted = static_cast<int>(DeviceLostDrive::Wanted::NotRead);
     static int64_t frame = 0;
     static bool fired = false;
-    if (wanted == -2) {
+    if (wanted == static_cast<int>(DeviceLostDrive::Wanted::NotRead)) {
         const char* v = Opt().forceDeviceLost;
-        wanted = DeviceLostDrive::Armed() ? -3 : (v && *v) ? ClampedAtoi(v) : -1;
+        wanted = DeviceLostDrive::Armed() ? static_cast<int>(DeviceLostDrive::Wanted::OnRequest)
+                 : (v && *v)               ? ClampedAtoi(v)
+                                           : static_cast<int>(DeviceLostDrive::Wanted::Disabled);
         if (wanted > 0) {
             std::fprintf(stderr, "[DeviceLost] ARMED: a synthetic VK_ERROR_DEVICE_LOST will be injected on present "
                                  "#%d (Vulkan)\n", wanted);
         }
-        if (wanted == -3) {
+        if (wanted == static_cast<int>(DeviceLostDrive::Wanted::OnRequest)) {
             std::fprintf(stderr, "[DeviceLost] ARMED: a synthetic VK_ERROR_DEVICE_LOST will be injected on the first "
                                  "present after a background save starts (Vulkan)\n");
         }
     }
     ++frame;
-    if (wanted == -3) {
+    if (wanted == static_cast<int>(DeviceLostDrive::Wanted::OnRequest)) {
         if (fired || !DeviceLostDrive::TakeRequest()) return false;
         fired = true;
         return true;
@@ -1652,7 +1655,7 @@ void ImageBufferData::AttachColorBuffer() {
     ib->_addressV = 1;
     ib->_addressU = 1;
     ib->_filter = 0;
-    ib->_flags = 0x10;
+    ib->_flags = Video::ImageBuffer::kAliasedColor;
 }
 
 void ImageBufferData::AttachDepthBuffer() {
@@ -1668,7 +1671,7 @@ void ImageBufferData::AttachDepthBuffer() {
     ib->_addressV = 1;
     ib->_addressU = 1;
     ib->_filter = 0;
-    ib->_flags = 0x20;
+    ib->_flags = Video::ImageBuffer::kAliasedDepth;
 }
 
 // dx11 0x180001070: OMSetRenderTargets(colour, depth). Here the render buffer becomes the draw target;

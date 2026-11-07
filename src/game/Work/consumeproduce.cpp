@@ -231,12 +231,12 @@ static int FinalizeAction(ConsumeProduce* self, CitizenComponent** citizenIBP, i
     Profession* targetBuf;
     Profession* actionPtr = *self->GetTarget(&targetBuf);
 
-    citizen->statusFlags |= 4;
+    citizen->statusFlags |= Bits(CitizenStatus::TaskDone);
     citizen->field_0x30 = priority;
-    citizen->field_0xB0 = 0;
+    citizen->lastErrand = CitizenErrand::None;
 
     if (actionPtr == citizen->profession && priority >= 0) {
-        citizen->happinessFlags |= 0x20000;
+        citizen->happinessFlags |= CitizenComponent::kHappinessWorkedOwnProfession;
     }
 
     // Store citizen entity ref at self->field_58[slotIndex]
@@ -488,7 +488,7 @@ int ConsumeProduce::Execute(CitizenComponent** citizenIBP, System::Time* /*conte
 
                 if (foundEntity != nullptr) {
                     // Check passability
-                    uint64_t passable = map->ValidateCell(0xe1f, (uint32_t)citizenCell,
+                    uint64_t passable = map->ValidateCell(PathBits::Walk, (uint32_t)citizenCell,
                                                              (uint32_t)field_28);
                     if ((char)passable == '\0') {
                         return 1;
@@ -704,15 +704,15 @@ int ConsumeProduce::Execute(CitizenComponent** citizenIBP, System::Time* /*conte
             if (py >= mapSize) py = mapSize - 1;
             int posCell = py * mapSize + px;
 
-            // Check if position has status 2 but no structure (the cell's occupant, +0x08)
+            // Check if position is NeedsReset but has no structure (the cell's occupant, +0x08)
             int* statusArray = field_68._data;
             MapCell* structBase = map->cells.GetData();
-            if (statusArray[posIdx] == 2 &&
+            if (static_cast<WorkSpotState>(statusArray[posIdx]) == WorkSpotState::NeedsReset &&
                 structBase[posCell].occupant == nullptr) {
-                statusArray[posIdx] = 0;
+                statusArray[posIdx] = static_cast<int32_t>(WorkSpotState::Available);
             }
 
-            if (statusArray[posIdx] == 0) {
+            if (static_cast<WorkSpotState>(statusArray[posIdx]) == WorkSpotState::Available) {
                 freeCount++;
                 if ((int)firstFreePos < 0) {
                     firstFreePos = (uint32_t)posIdx;
@@ -800,13 +800,13 @@ int ConsumeProduce::Execute(CitizenComponent** citizenIBP, System::Time* /*conte
             MapCell* srcCellStruct = &structBase3[citizenCell];
             MapCell* dstCellStruct = &structBase3[prodCellX * mapSize + prodCellY];
 
-            uint32_t srcMask = 1 << (dstCellStruct->terrainType & 0x1f);   // +0x29
-            uint32_t dstMask = 1 << (srcCellStruct->terrainType & 0x1f);
+            uint32_t srcMask = 1 << (static_cast<uint8_t>(dstCellStruct->terrainType) & 0x1f);   // +0x29
+            uint32_t dstMask = 1 << (static_cast<uint8_t>(srcCellStruct->terrainType) & 0x1f);
             uint32_t combined = srcMask | dstMask;
-            uint32_t passFlags = combined | 0xe1f;
+            uint32_t passFlags = combined | Bits(PathBits::Walk);
 
             if ((passFlags & dstMask) != 0 && (passFlags & srcMask) != 0 &&
-                ((combined & 0x1e0) != 0 ||
+                ((combined & Bits(PathBits::Zoneless)) != 0 ||
                  (srcCellStruct->zone != 0 &&   // +0x26
                   dstCellStruct->zone != 0 &&
                   srcCellStruct->zone == dstCellStruct->zone))) {
@@ -845,7 +845,7 @@ int ConsumeProduce::Execute(CitizenComponent** citizenIBP, System::Time* /*conte
 
                 // Update status array for the position
                 if (canFinish != '\0') {
-                    field_68[(int)firstFreePos] = 1;
+                    field_68[(int)firstFreePos] = static_cast<int32_t>(WorkSpotState::InUse);
                 }
 
                 int priority3 = field_20;
@@ -907,7 +907,7 @@ int ConsumeProduce::OnComplete(CitizenComponent** /*param2*/, ComponentEntity** 
     uint32_t slotIdx = param4 & 0x7F;
     field_58[slotIdx] = nullptr;   // the InternalBasePtr ctor with null
 
-    // If bit 15 set, mark the int array slot as state 2 (completed)
+    // If bit 15 set, mark the int array slot as state 2 (NeedsReset, completed)
     if ((param4 >> 15) & 1) {
         int* intArray = field_68._data;
         uint32_t intIdx = (param4 >> 8) & 0x7F;
@@ -924,7 +924,7 @@ int ConsumeProduce::OnComplete(CitizenComponent** /*param2*/, ComponentEntity** 
                 field_68._size, field_68._capacity, (void*)intArray, slotIdx, field_58._size);
             RedzoneAlloc_PrintBacktrace("ConsumeProduce::OnComplete");
         }
-        intArray[intIdx] = 2;
+        intArray[intIdx] = static_cast<int32_t>(WorkSpotState::NeedsReset);
     }
 
     // If bit 16 set, increment the produce counter
@@ -1055,9 +1055,9 @@ int ConsumeProduce::Validate() {
                 }
             }
             if (!found) {
-                // No valid citizen handles this slot -- mark as needs-redo
-                if (intArray[k] == 1) {
-                    intArray[k] = 2;
+                // No valid citizen handles this slot -- mark it NeedsReset
+                if (static_cast<WorkSpotState>(intArray[k]) == WorkSpotState::InUse) {
+                    intArray[k] = static_cast<int32_t>(WorkSpotState::NeedsReset);
                 }
             }
         }

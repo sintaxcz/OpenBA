@@ -32,6 +32,7 @@
 #include "Component/controller_state_table.h"
 #include "Object/exe_type.h"
 #include "collection/Collection.h"   // Collection::Array (plots)
+#include "Game/PathType.h"           // PathBits (CemeteryTypeIsZoneless)
 
 struct CemeteryCtrlTag { using Owner = class CemeteryComponent; };   // the handlers' receiver (controller_state_table.h)
 
@@ -49,7 +50,7 @@ public:
     void          Startup() override {}                           // [4]  0x1400475b0 `RET 0` (own)
     void          OnAdded() override;                             // [6]  0x140047200
     void          OnRemove() override;                            // [7]  0x1400471c0
-    int         GetDefaultState() const override { return 2; }  // [16] 0x1400026c0
+    int         GetDefaultState() const override { return SmId(BuildingState::Built); }  // [16] 0x1400026c0
     Controller* GetController() override { return &_controller; }  // [17] 0x140004080
 
     // ---- non-virtual members (retail addresses) ----
@@ -76,8 +77,9 @@ static_assert(offsetof(CemeteryComponent, plots) + offsetof(Collection::Array<in
 static_assert(offsetof(CemeteryComponent, plots) + offsetof(Collection::Array<int32_t>, _capacity) == 0x54, "CemeteryComponent +0x54");
 
 // The state-2 enter's zone test on a free plot's cell (0x140047100 MOVZX ECX,[RDI+0x29];
-// 0x140047104 SHL EAX,CL; 0x140047106 TEST EAX,0x1e0): zones 5..8 are walkable.
-constexpr bool CemeteryWalkableZone(uint8_t zone) {
-    // SHL masks its count to 5 bits; the mask keeps a saved zone byte >= 32 defined (review F-161).
-    return ((1u << (zone & 0x1f)) & 0x1e0u) != 0;
+// 0x140047104 SHL EAX,CL; 0x140047106 TEST EAX,0x1e0): the cell type is one of
+// PathBits::Zoneless (types 5..8), so stamping it Normal changes the zones.
+constexpr bool CemeteryTypeIsZoneless(uint8_t type) {
+    // SHL masks its count to 5 bits; the mask keeps a saved type byte >= 32 defined (review F-161).
+    return ((1u << (type & 0x1f)) & Bits(PathBits::Zoneless)) != 0;
 }

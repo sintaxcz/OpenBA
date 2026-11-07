@@ -106,6 +106,7 @@
 #include "Entity/ComponentEntity.h"   // ComponentEntity::FindComponent<T>
 #include "Component/MapComponent.h"
 #include "Game/Map.h"
+#include "Component/BuildingState.h"   // BuildingState (the Infect state gate)
 #include "Work/GridTile.h"   // GridTile, RawArray (0x14009fc00)
 #include "Entity/CitizenBehavior.h"
 #include "Component/DiseaseComponent.h"
@@ -395,11 +396,12 @@ void DiseaseComponent::Infect() {
 
     StateMachineComponent* smc =
         _entity->FindComponent<StateMachineComponent>();   // 0x140003ea0
-    // State gate: the field must be past stage 1. The pending state (+0x52) is the
+    // State gate: the field must be past stage 1 (GatherMaterials, i.e. built: any id
+    // above it; None and ClearSite fail too). The pending state (+0x52) is the
     // override, used unless negative, in which case the current input (+0x50) is read.
     int8_t stage = smc->stateMachine.pendingState;
     if (stage < 0) stage = smc->stateMachine.currentInput;
-    if (stage <= 1) {
+    if (stage <= StateByte(BuildingState::GatherMaterials)) {
         if (CDTrace()) {
             printf("[CropDisease] INFECT-SKIPPED self=%p reason=stage=%d (<=1)\n",
                    (void*)this, (int)stage);
@@ -580,7 +582,7 @@ void DiseaseComponent::KillOneAnimal() {
         if (((animal->_flags >> 0x14) & 1) == 0) {
             ComponentEntity* victim = member->_entity.Get();
             if (victim == nullptr) break;
-            if (((victim->_entityFlags >> 10) & 1) != 0) break;
+            if ((victim->_entityFlags & Bits(ComponentFlags::MarkedForRemoval)) != 0) break;
             victim->MarkForRemoval();
             if (entityMgr) {
                 entityMgr->removalList.SetSize(entityMgr->removalList._size + 1, victim);   // 0x140003110

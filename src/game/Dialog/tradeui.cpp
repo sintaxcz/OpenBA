@@ -64,6 +64,7 @@
 #include "Component/ComponentDescription.h"
 #include "Component/RawMaterialDescription.h"   // X::TypeId() (B.3.9 CG2)
 #include "Component/StateMachineComponent.h"   // X::TypeId() (B.3.9 CG2)
+#include "Component/BuildingState.h"
 #include "Component/ComponentDescription.h"   // X::TypeId() (B.3.9 CG2)
 #include "Component/SelectDescription.h"   // X::TypeId() (B.3.9 CG2)
 #include "system/MemoryAllocator.h"   // B3R: the allocator doors
@@ -377,7 +378,7 @@ void TradeUI::RefreshSellTable()
         int8_t state52 = buildStateComp->stateMachine.pendingState;
         int8_t stateVal = state52;
         if (state52 < 0) stateVal = buildStateComp->stateMachine.currentInput;
-        tradeActive = (stateVal == 0x13);
+        tradeActive = (stateVal == StateByte(BuildingState::MerchantDocked));
     }
 
     // Populate sell table cells
@@ -390,7 +391,7 @@ void TradeUI::RefreshSellTable()
             int sellableCount = trade->GetResourcePrice(sellData.resource);
 
             bool hasStock = (sellableCount > 0);
-            uint32_t color = hasStock ? 0xFFFFFFFF : 0xFF808080;
+            uint32_t color = hasStock ? System::kColorWhite : System::kColorGrey;
 
             // Set sprite from ValueDescription (+0x20=spriteSheet, +0x28=spriteName)
             ValueDescription* valueDesc = sellData.value;
@@ -1058,7 +1059,7 @@ void TradeUI::OnCreated() {
 // resource entity: +0x28 = component array ptr, +0x30 = component count
 //   component value at +0x48 (identified by vtable+0x10 returning TypeId_RawMaterialDescription)
 // merchant state check: BuildState component, byte at +0x52 (or +0x50 if negative)
-//   0x13 = merchant arrived (enables dismiss button)
+//   0x13 = BuildingState::MerchantDocked (enables dismiss button)
 // storage capacity: StorageComponent+0x38 vs StorageComponent_QueryCount
 //   bStorageFull = capacity < storageCount + (buyTotal - sellTotal)
 
@@ -1135,26 +1136,26 @@ void TradeUI::OnUpdateLayout() {
         // Buy value exceeds sell value — show "not enough" text with difference
         System::String strBuf = System::String::Format("%d", (unsigned)(displayBuyTotal - displaySellTotal));
         _textNotEnough->SetParameter(0, strBuf);
-        _textNoStorage->SetFlagsOnOff(1, 0);  // hide textNoStorage
-        _textTooMuch->SetFlagsOnOff(1, 0);    // hide textTooMuch
-        _textNotEnough->SetFlagsOnOff(0, 1);  // show textNotEnough
+        _textNoStorage->SetFlagsOnOff(UI::kElementFlagHidden, 0);  // hide textNoStorage
+        _textTooMuch->SetFlagsOnOff(UI::kElementFlagHidden, 0);    // hide textTooMuch
+        _textNotEnough->SetFlagsOnOff(0, UI::kElementFlagHidden);  // show textNotEnough
     } else if (bStorageFull) {
         // Storage overflow — show "no storage" text
-        _textNoStorage->SetFlagsOnOff(0, 1);  // show textNoStorage
-        _textTooMuch->SetFlagsOnOff(1, 0);    // hide textTooMuch
-        _textNotEnough->SetFlagsOnOff(1, 0);  // hide textNotEnough
+        _textNoStorage->SetFlagsOnOff(0, UI::kElementFlagHidden);  // show textNoStorage
+        _textTooMuch->SetFlagsOnOff(UI::kElementFlagHidden, 0);    // hide textTooMuch
+        _textNotEnough->SetFlagsOnOff(UI::kElementFlagHidden, 0);  // hide textNotEnough
     } else if (!bBuySell) {
         // Totals are equal (no net trade) — hide all warning texts
-        _textNoStorage->SetFlagsOnOff(1, 0);  // hide textNoStorage
-        _textTooMuch->SetFlagsOnOff(1, 0);    // hide textTooMuch
-        _textNotEnough->SetFlagsOnOff(1, 0);  // hide textNotEnough
+        _textNoStorage->SetFlagsOnOff(UI::kElementFlagHidden, 0);  // hide textNoStorage
+        _textTooMuch->SetFlagsOnOff(UI::kElementFlagHidden, 0);    // hide textTooMuch
+        _textNotEnough->SetFlagsOnOff(UI::kElementFlagHidden, 0);  // hide textNotEnough
     } else {
         // Sell value exceeds buy value — show "too much" text with difference
         System::String strBuf = System::String::Format("%d", (unsigned)(displaySellTotal - displayBuyTotal));
         _textTooMuch->SetParameter(0, strBuf);
-        _textNoStorage->SetFlagsOnOff(1, 0);  // hide textNoStorage
-        _textTooMuch->SetFlagsOnOff(0, 1);    // show textTooMuch
-        _textNotEnough->SetFlagsOnOff(1, 0);  // hide textNotEnough
+        _textNoStorage->SetFlagsOnOff(UI::kElementFlagHidden, 0);  // hide textNoStorage
+        _textTooMuch->SetFlagsOnOff(0, UI::kElementFlagHidden);    // show textTooMuch
+        _textNotEnough->SetFlagsOnOff(UI::kElementFlagHidden, 0);  // hide textNotEnough
     }
 
     // --- Find BuildState (merchant) component and check merchant arrival state ---
@@ -1163,7 +1164,7 @@ void TradeUI::OnUpdateLayout() {
     // State byte at +0x52 (primary), +0x50 (fallback if negative)
     int8_t stateByte = buildState->stateMachine.pendingState;
     if (stateByte < 0) stateByte = buildState->stateMachine.currentInput;
-    bool merchantArrived = (stateByte == 0x13);
+    bool merchantArrived = (stateByte == StateByte(BuildingState::MerchantDocked));
 
     // --- Enable/disable buttonDismiss (enabled when merchant is present) ---
     _buttonDismiss->Enable(merchantArrived);
@@ -1237,13 +1238,14 @@ void TradeUI::OnUpdate(const System::Time& /*time*/) {
 
 
 // [9] 0x140081f20
-void TradeUI::OnElementEvent(Object::InternalPtr<UI::Element>* /*element*/, int32_t eventType, int32_t eventId,
+void TradeUI::OnElementEvent(Object::InternalPtr<UI::Element>* /*element*/, UI::EventId eventType, int32_t eventId,
                              int32_t /*c*/, int32_t /*d*/, int32_t /*e*/, void* /*userData*/) {
     if (!tradeui_sa::IsSetUp(this)) return;
     tradeui_sa::Trace("Slot9-event", this);
 
 
-    int switchVal = eventType - 0x12;
+    // The id ladder: 0 = Activated (0x12), two on = SelectionChanged, one more = ValueChanged.
+    int switchVal = static_cast<int32_t>(eventType) - static_cast<int32_t>(UI::EventId::Activated);
     if (switchVal == 0) {
         // --- eventType 0x12: click events ---
         if (eventId == 0x4e20) {
@@ -1598,11 +1600,11 @@ void TradeUI::OnDismissButton() {
     // Read merchant state byte from +0x51 (sign-extended, no fallback)
     int8_t stateByte = buildState->stateMachine.activeState;
 
-    // Post event 10 to the current controller node (dismiss notification):
+    // Post event 10 (MerchantDismissed) to the current controller node:
     // Controller slot 2, PostEvent(stateMachine, stateIndex, eventId), with the
     // state machine at +0x48 and the state byte at +0x51 (0x1400819a9..0x1400819c2).
     ControllerComponent::Controller* node = buildState->stateMachine.current;
-    node->PostEvent(&buildState->stateMachine, stateByte, 10);
+    node->PostEvent(&buildState->stateMachine, stateByte, SmId(BuildingEvent::MerchantDismissed));
 
     // Refresh display and tables
     RefreshDisplay();
@@ -1747,10 +1749,10 @@ void TradeUI::RefreshSellSpinnerValues() {
     // Check merchant state: find the state machine
     StateMachineComponent* bsComp = entity->FindComponent<StateMachineComponent>();
 
-    // Byte at +0x52 (fallback +0x50 if negative) compared to 0x13 (merchant arrived).
+    // Byte at +0x52 (fallback +0x50 if negative) compared to 0x13 (BuildingState::MerchantDocked).
     int8_t stateByte = bsComp->stateMachine.pendingState;
     if (stateByte < 0) stateByte = bsComp->stateMachine.currentInput;
-    bool merchantArrived = (stateByte == 0x13);
+    bool merchantArrived = (stateByte == StateByte(BuildingState::MerchantDocked));
 
     if (sellCount > 0) {
         for (int i = 0; i < sellCount; i++) {

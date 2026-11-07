@@ -146,8 +146,8 @@ void ScenarioDialog::OnOpened() {
         ScenarioDialogEntry entry = {};
         entry.element = clonedElem;
 
-        // Set element hidden initially (flags 0x10000 = hidden)
-        clonedElem->SetFlagsOnOff(0x10000, 0);
+        // The element raises element events (hover, press, tooltip; flag 0x10000)
+        clonedElem->SetFlagsOnOff(UI::kElementFlagRaisesEvents, 0);
 
         // Set element ID = entryIndex + 1000
         clonedElem->SetElementId(entryIndex + 1000);
@@ -346,17 +346,19 @@ void ScenarioDialog::LoadSelected() {
         }   // (matches retail's early release of the data-directory temp)
 
         // Run SaveLoad::Update loop until operation completes
-        int operation = saveLoad->GetOperation();
-        printf("[ScenarioDialog::LoadSelected] SAVED SCENARIO: entering SaveLoad loop, initial operation=%d\n", operation);
+        Save::SaveLoad::Operation operation = saveLoad->GetOperation();
+        printf("[ScenarioDialog::LoadSelected] SAVED SCENARIO: entering SaveLoad loop, initial operation=%d\n",
+               static_cast<int>(operation));
         int loopCount = 0;
-        while (operation != 0) {
+        while (operation != Save::SaveLoad::kOpNone) {
             System::Time zeroTime;
             RtSystem_Time_Ctor(&zeroTime, 0.0f);
             saveLoad->Update(zeroTime);
             operation = saveLoad->GetOperation();
             loopCount++;
             if (loopCount % 100 == 0) {
-                printf("[ScenarioDialog::LoadSelected] SaveLoad loop iteration %d, operation=%d\n", loopCount, operation);
+                printf("[ScenarioDialog::LoadSelected] SaveLoad loop iteration %d, operation=%d\n", loopCount,
+                       static_cast<int>(operation));
             }
         }
         printf("[ScenarioDialog::LoadSelected] SaveLoad loop done after %d iterations\n", loopCount);
@@ -386,16 +388,16 @@ void ScenarioDialog::LoadSelected() {
 // Slot8 (0x140077F80): OnCommand — selection change and button dispatch.
 // param3=2 (selection change): updates selected index from button IDs 1000+
 // param3=0x12 (button click): id=100 → close, id=101 → load selected scenario
-void ScenarioDialog::OnElementEvent(Object::InternalPtr<UI::Element>* /*element*/, int32_t param3, int32_t param4, int32_t /*c*/, int32_t /*d*/, int32_t /*e*/, void* /*userData*/) {
+void ScenarioDialog::OnElementEvent(Object::InternalPtr<UI::Element>* /*element*/, UI::EventId param3, int32_t param4, int32_t /*c*/, int32_t /*d*/, int32_t /*e*/, void* /*userData*/) {
     printf("[ScenarioDialog::Slot8] OnCommand: param3=0x%x, param4=%d\n", param3, param4);
 
-    if (param3 == 2) {
+    if (param3 == UI::EventId::LeftPress) {
         // Selection change — button IDs are 1000 + index
         int maxIndex = entries.GetSize();
         if (param4 > 999 && param4 < maxIndex + 1000) {
             selectedIndex = param4 - 1000;
         }
-    } else if (param3 == 0x12) {
+    } else if (param3 == UI::EventId::Activated) {
         if (param4 == 100) {
             // Close button
             Object::InternalPtr<UI::DialogInstance> self(this);

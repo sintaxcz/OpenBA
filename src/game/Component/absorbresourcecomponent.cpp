@@ -108,7 +108,7 @@ char AbsorbResourceComponent::State0Tick() {
                        rawMaterial->quantity);
 
             EntityList* const entityList = GameUpdateLoop::_singleton->m_entityList;
-            if (((cellEntity->_entityFlags >> 10) & 1) != 0) continue;
+            if ((cellEntity->_entityFlags & Bits(ComponentFlags::MarkedForRemoval)) != 0) continue;
             cellEntity->MarkForRemoval();
             // exe 0x140003110 IS Collection::Array<void*>::SetSize(n, fill).
             entityList->removalList
@@ -131,7 +131,7 @@ static void AbsorbResourceComponent_PopulateStateTable() {
     using namespace ::ControllerLive;
     auto& t = AbsorbResourceCtrlDispatch::table;
     if (t.count != 0) return;                      // idempotent
-    TableRegisterState(t, 0, nullptr, nullptr,
+    TableRegisterState(t, BuildingState::ClearSite, nullptr, nullptr,
                        &AbsorbResourceState0Tick, nullptr);
 }
 static const bool s_absorbResourceStateTableBuilt = (AbsorbResourceComponent_PopulateStateTable(), true);

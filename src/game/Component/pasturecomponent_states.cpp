@@ -434,15 +434,15 @@ void PastureProduce(PastureComponent* self) {
             if (occ != nullptr && occ->FindComponent<RawMaterialComponent>() == nullptr) {   // 0x1400223c0
                 // Not a pile: clear the occupant off the cell and take it
                 // (0x140126a5c-0x140126ae2; the same retype as the cemetery's grave).
-                const uint8_t old = rec.terrainType;                              // +0x29
-                const bool wasWalk = ((1u << (old & 0x1f)) & 0x1e0u) != 0;       // old 5..8
-                map->field_0xA2 |= static_cast<uint8_t>(wasWalk);
-                rec.terrainType = 2;
+                const uint8_t old = static_cast<uint8_t>(rec.terrainType);       // +0x29
+                const bool wasZoneless = ((1u << (old & 0x1f)) & Bits(PathBits::Zoneless)) != 0;   // old 5..8
+                map->field_0xA2 |= static_cast<uint8_t>(wasZoneless);
+                rec.terrainType = PathType::Normal;
                 TerrainSidecar::NoteWrite(&rec);   // [terrain sidecar] mirror (missing until PERFXEXT)
                 CellStamp::NoteWrite(&rec);   // [AMBMEMO] cell write clock
-                if (wasWalk)
+                if (wasZoneless)
                     map->regionGraph->MarkCellDirty(cell % map->size, cell / map->size);   // +0x70, 0x1400a8c90
-                map->pathfinder->SetCellTerrain(cell, 2);                                   // +0x68, 0x1400a6fe0
+                map->pathfinder->SetCellTerrain(cell, ToUnderlying(PathType::Normal));      // +0x68, 0x1400a6fe0
                 rec.occupant = nullptr;
                 CellStamp::NoteWrite(&rec);   // [AMBMEMO] cell write clock
                 occ = nullptr;
@@ -533,17 +533,18 @@ static void PastureCtrl_PopulateTable() {
     using namespace ::ControllerLive;
     auto& t = PastureDispatch::table;
     if (t.count != 0) return;                       // idempotent
-    // state 2 (the controller's DEFAULT state): operational.
-    //   enter = helper_70c0, per-frame (trans38) = sub_67e0, transitions -> {3}
-    TableRegisterState(t, 2, &PastEnterOperational,
+    // state 2 Built (the controller's DEFAULT state): operational.
+    //   enter = helper_70c0, per-frame (trans38) = sub_67e0, transitions -> {Demolish}
+    TableRegisterState(t, BuildingState::Built, &PastEnterOperational,
                        nullptr, &PastTickOperational, nullptr);
-    TableAddTransition(t, 3, nullptr);
-    // state 3: teardown. enter = helper_6e40, no per-frame, transitions -> {6,4,5}
-    TableRegisterState(t, 3, &PastEnterTeardown,
+    TableAddTransition(t, BuildingState::Demolish, nullptr);
+    // state 3 Demolish: teardown. enter = helper_6e40, no per-frame,
+    //   transitions -> {Collapse, HaulAway, Deconstruct} (6, 4, 5)
+    TableRegisterState(t, BuildingState::Demolish, &PastEnterTeardown,
                        nullptr, nullptr, nullptr);
-    TableAddTransition(t, 6, nullptr);
-    TableAddTransition(t, 4, nullptr);
-    TableAddTransition(t, 5, nullptr);
+    TableAddTransition(t, BuildingState::Collapse, nullptr);
+    TableAddTransition(t, BuildingState::HaulAway, nullptr);
+    TableAddTransition(t, BuildingState::Deconstruct, nullptr);
     std::fprintf(stderr, "[Pasture] state table populated: %d states (2=operational, "
                  "3=teardown)\n", t.count);
     std::fflush(stderr);

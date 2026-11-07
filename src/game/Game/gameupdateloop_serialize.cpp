@@ -221,7 +221,7 @@ void WeatherSimulation::Serialize(IO::Stream& stream) {
     ::Object::SerializeExternal<EnvironmentDescription>(ser, environment);   // 0x1400192a0
     ::Object::SerializeExternal<ClimateGenerator>(ser, climate);      // 0x1400194a0
 
-    ser.Serialize(field_0x10, nullptr);
+    ser.Serialize(reinterpret_cast<int32_t&>(weatherType), nullptr);
     ser.Serialize(field_0x14, nullptr);
     ser.Serialize(temperature, nullptr);
     // ?Serialize@Vector4@Math@@QEAAXAEAVSerializer@IO@@@Z  retail 0x18001d360
@@ -534,12 +534,12 @@ static void EntityList_PostLoad_c4730(EntityList* el, IO::Stream* stream) {
             // Retail re-reads the owner it has just stored.
             EntityList* owner = e->_entityList;
             uint32_t flags = e->_entityFlags;
-            if (flags & 4) {
+            if (flags & Bits(ComponentFlags::Tick)) {
                 ::Object::InternalPtr<ComponentEntity> ibp;   // the zeroed slot the placement ctor fills
                 new (&ibp) ::Object::InternalBasePtr(e);   // ComponentEntity is-an Object::Internal (its one base)
                 owner->stagingUpdate.SetSizeFill(owner->stagingUpdate._size + 1, &ibp);   // 0x140003110
             }
-            if (flags & 0x10) {
+            if (flags & Bits(ComponentFlags::PostUpdate)) {
                 ::Object::InternalPtr<ComponentEntity> ibp;   // the zeroed slot the placement ctor fills
                 new (&ibp) ::Object::InternalBasePtr(e);   // ComponentEntity is-an Object::Internal (its one base)
                 owner->stagingPostUpdate.SetSizeFill(owner->stagingPostUpdate._size + 1, &ibp);   // 0x140003110

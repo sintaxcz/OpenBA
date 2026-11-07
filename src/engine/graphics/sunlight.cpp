@@ -281,23 +281,28 @@ constexpr int32_t kSunMapLargeSize  = 0x2000;   // ext.max_shadow_size 8192
 // FL 10_0 at least: D3D10_REQ_TEXTURE2D_U_OR_V_DIMENSION = 8192, 16384 at FL 11_0),
 // the memory may not. So the first time 8192 is asked for, a throwaway depth image
 // of the map's exact descriptor is created through the engine's own ImageBuffer and
-// deleted again; its Create result decides for the rest of the process. -1 unknown,
-// 0 failed (4096 is used), 1 fits.
-int g_largeSunMapFits = -1;
+// deleted again; its Create result decides for the rest of the process.
+enum class SunMapProbe : int {
+    Unknown    = -1,   // not probed yet
+    DoesNotFit = 0,    // the probe failed: 4096 is used
+    Fits       = 1,
+};
+SunMapProbe g_largeSunMapFits = SunMapProbe::Unknown;
 
 bool LargeSunMapFits(bool mayProbe) {
-    if (g_largeSunMapFits < 0 && mayProbe && Video::Device::_singleton != nullptr &&
+    if (static_cast<int>(g_largeSunMapFits) < 0 && mayProbe && Video::Device::_singleton != nullptr &&
         Video::Device::_singleton->deviceData != nullptr) {
         Video::ImageBuffer* const probe = NewImageBuffer();
         const bool ok = probe != nullptr &&
-                        probe->Create(0, 1, 7, 0x40, kSunMapLargeSize, kSunMapLargeSize, 1, 1, 1, 1, nullptr);
+                        probe->Create(0, 1, 7, Video::ImageBuffer::kShadowMap, kSunMapLargeSize,
+                                      kSunMapLargeSize, 1, 1, 1, 1, nullptr);
         DeleteImageBuffer(probe);
-        g_largeSunMapFits = ok ? 1 : 0;
+        g_largeSunMapFits = ok ? SunMapProbe::Fits : SunMapProbe::DoesNotFit;
         if (!ok)
             std::fprintf(stderr, "[ShadowRes] an 8192x8192 sun map could not be created on this device: "
                                  "using 4096 (ext.max_shadow_size=8192 left as set)\n");
     }
-    return g_largeSunMapFits != 0;   // unknown and not probing: the caller only compares
+    return g_largeSunMapFits != SunMapProbe::DoesNotFit;   // unknown and not probing: the caller only compares
 }
 
 // The raw size the three Create sites pass. Faithful: one null test. `mayProbe`: the caller
@@ -407,8 +412,8 @@ void SunLight::Set(const Math::Vector3& direction, const Math::Vector4& sun,
         _colourTarget = NewImageBuffer();
         // 0x800 in retail. ext.max_shadow_res: the depth's raw size, so the two
         // attachments always match (the depth is 0x800 unless the row is on).
-        _colourTarget->Create(0, 0, 5, 0x40, _depthTarget->_width, _depthTarget->_width,
-                              1, 1, 1, 1, nullptr);
+        _colourTarget->Create(0, 0, 5, Video::ImageBuffer::kShadowMap, _depthTarget->_width,
+                              _depthTarget->_width, 1, 1, 1, 1, nullptr);
         _renderBuffer = NewRenderBuffer();
         _renderBuffer->Create(_colourTarget, _depthTarget);
     } else if (!DeviceSupportsColourShadowTarget() && _colourTarget != nullptr) {
@@ -453,20 +458,20 @@ void Graphics::SunLight::InitFields() {
     _colourTarget = nullptr;
     _depthTarget  = nullptr;
     _renderBuffer = nullptr;
-    _materialTypeFlags = 0x8000;
+    _materialTypeFlags = static_cast<uint32_t>(MaterialTypeMask::Light);   // 0x8000
 
     // 0x800 in retail; ext.max_shadow_res may raise it (SunMapRawSize, above).
     const int32_t size = SunMapRawSize(true);
     if (DeviceSupportsColourShadowTarget()) {
         _colourTarget = NewImageBuffer();
-        _colourTarget->Create(0, 0, 5, 0x40, size, size, 1, 1, 1, 1, nullptr);
+        _colourTarget->Create(0, 0, 5, Video::ImageBuffer::kShadowMap, size, size, 1, 1, 1, 1, nullptr);
     }
 
     // Unconditional — the join label 0x180108325 is BELOW the capability test's
     // JZ target, so the depth target and the render buffer are built whether or
     // not the colour target was.
     _depthTarget = NewImageBuffer();
-    _depthTarget->Create(0, 1, 7, 0x40, size, size, 1, 1, 1, 1, nullptr);
+    _depthTarget->Create(0, 1, 7, Video::ImageBuffer::kShadowMap, size, size, 1, 1, 1, 1, nullptr);
 
     _renderBuffer = NewRenderBuffer();
     _renderBuffer->Create(_colourTarget, _depthTarget);
@@ -478,7 +483,7 @@ void Graphics::SunLight::InitFields() {
     if (!same) {
         b.min.x = kBoundsMin; b.min.y = kBoundsMin; b.min.z = kBoundsMin;
         b.max.x = kBoundsMax; b.max.y = kBoundsMax; b.max.z = kBoundsMax;
-        _dirtyFlags |= 2u;
+        _dirtyFlags |= RtGraphics::kDirtyBounds;
     }
 
 }

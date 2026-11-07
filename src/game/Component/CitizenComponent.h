@@ -75,6 +75,42 @@
 #include "system/Value.h"   // System::Time (8 bytes, trivial)
 #include "collection/Collection.h"   // Collection::Array (+0x98)
 #include "graphics/Mesh.h"           // Graphics::MeshInstance (+0xB8, embedded)
+#include "system/EnumFlags.h"         // OPENBA_ENUM_FLAGS (CitizenStatus)
+
+// CitizenComponent::statusFlags (+0x54): what happened to the citizen since the last
+// health update. Update (0x140112e70), the eat loop EatFrom (0x1401152e0), the AI state
+// handlers / Work bodies and NeedsUpdate (0x140112260) set bits; UpdateHealth
+// (0x140112990) scores them and zeroes the word. No retail name (no reflection table);
+// the names come from the writers. A grep finds no other reader.
+enum class CitizenStatus : uint32_t {
+    Hungry         = 0x001,   // Update: hunger above the description's threshold; costs health
+    Cold           = 0x002,   // Update: coldness above the description's threshold; costs health
+    TaskDone       = 0x004,   // a state handler's or Work body's success epilogue (`+0x54 |= 4`);
+                              //   an adult out of school without it loses health
+    Ate            = 0x008,   // EatFrom: a meal; the first one clears the four diet bits
+    DietGroup0     = 0x010,   // EatFrom: the food carried RawMaterialFlags::DietGroup0 (bit 0)
+    DietGroup1     = 0x020,   // EatFrom: RawMaterialFlags::DietGroup1 (bit 1)
+    DietGroup2     = 0x040,   // EatFrom: RawMaterialFlags::DietGroup2 (bit 2)
+    DietGroup3     = 0x100,   // EatFrom: RawMaterialFlags::DietGroup3 (bit 4)
+    UsedHealthItem = 0x200,   // NeedsUpdate message 3 (+0.5 health), sent after the State_GrowUp
+                              //   builder 0x1400bc790 consumes a Health item; candidate 4 is not
+                              //   offered again while it is set
+};
+OPENBA_ENUM_FLAGS(CitizenStatus)
+
+// CitizenComponent::lastErrand (+0xB0): the kind of the last task the citizen finished.
+// No retail name; the names come from the writers. The two gather handlers store it on
+// success (retail's own two stores, `= 0` then the value): GatherResources 0x14010bc90
+// (AI state 6, food, driven by hunger) stores GatherFood and GatherResources2 0x14010b3e0
+// (AI state 7, fuel, driven by coldness) stores GatherFuel. Every other state handler's or
+// Work body's success epilogue stores None. The only reader is the candidate list builder
+// (citizenai_candidatelist.cpp): a spouse whose last errand was GatherFood / GatherFuel
+// keeps the citizen from offering candidate 6 / 7.
+enum class CitizenErrand : uint32_t {
+    None       = 0,   // ctor; every non-gather task completion
+    GatherFood = 1,   // GatherResources 0x14010bc90 (AI state 6) succeeded
+    GatherFuel = 2,   // GatherResources2 0x14010b3e0 (AI state 7) succeeded
+};
 
 class Disease;
 class Profession;
@@ -91,6 +127,11 @@ class CitizenComponent final : public Component {
     DECLARE_EXE_TYPE(CitizenComponent)
 
 public:
+    // happinessFlags bit 17: the citizen worked at its own profession (every Work body
+    // sets it when `target == profession && priority >= 0`; UpdateHappiness 0x140112ae0
+    // scores it). The other happinessFlags bits are not named yet.
+    static constexpr uint32_t kHappinessWorkedOwnProfession = 0x20000u;
+
     CitizenComponent();                                           // 0x140114770
 
     // 0x1401146f0: ~MeshInstance(+0xB8) 0x140114717, MemFree(+0x98) + zero
@@ -184,7 +225,7 @@ public:
     float    coldness;             // +0x48 += dt * desc->coldRate[clothingLevel]; capped at desc->maxColdness
     float    pregnancyTimer;       // +0x4C > 0 counts down to a birth, < 0 counts up (the wait after one)
     float    health;               // +0x50 birth-risk ratio health / desc->maxHealth
-    uint32_t statusFlags;          // +0x54 |= 1 hungry, |= 2 cold (Update)
+    uint32_t statusFlags;          // +0x54 CitizenStatus bits, zeroed by UpdateHealth
     System::Time foodTimer;        // +0x58 += dt; each desc->foodInterval -> ConsumeFood
     System::Time field_0x60;       // +0x60 System::Time: += dt (Update)
     Disease* disease;              // +0x68 ExternalPtr<Disease> (serialize helper 0x140030790)
@@ -205,7 +246,7 @@ public:
                                    //       the happiness update compares its count (+0xA0) with desc+0xA8/+0xAC
     int32_t  field_0xA8;          // +0xA8 int, ctor -1; serialized (version > 0)
     int32_t  field_0xAC;           // +0xAC int, ctor 0; serialized
-    uint32_t field_0xB0;           // +0xB0 uint (Encoding slot 0x98), ctor 0
+    CitizenErrand lastErrand;      // +0xB0 uint (Encoding slot 0x98), ctor 0 (None)
     uint8_t  _padB4[4];            // +0xB4
 
     Graphics::MeshInstance meshInstance; // +0xB8 the carried tool / item mesh (ctor 0x140114808,
@@ -271,7 +312,8 @@ static_assert(sizeof(Collection::Array<ComponentDescription*>) == 0x10, "+0x98 A
 static_assert(sizeof(Graphics::MeshInstance) == 0x120, "+0xB8 MeshInstance ends at +0x1D8");
 static_assert(offsetof(CitizenComponent, field_0xA8)           == 0xA8,  "");
 static_assert(offsetof(CitizenComponent, field_0xAC)           == 0xAC,  "");
-static_assert(offsetof(CitizenComponent, field_0xB0)           == 0xB0,  "");
+static_assert(offsetof(CitizenComponent, lastErrand)           == 0xB0,  "");
+static_assert(sizeof(CitizenErrand) == 4, "+0xB0 lastErrand is a 4-byte uint");
 static_assert(offsetof(CitizenComponent, _padB4)               == 0xB4,  "");
 static_assert(offsetof(CitizenComponent, meshInstance)         == 0xB8,  "");
 static_assert(offsetof(CitizenComponent, toolId)               == 0x1D8, "");

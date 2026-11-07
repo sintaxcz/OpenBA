@@ -30,6 +30,7 @@
 #include "Entity/ComponentEntity.h"   // X::TypeId() (B.3.8 callers)
 #include "Component/DestroyComponent.h"       // B4 DLG-a: by-name reads
 #include "Component/StateMachineComponent.h"
+#include "Component/BuildingState.h"
 #include "Component/StorageComponent.h"
 #include "Component/ComponentDescription.h"
 #include "Dialog/exe_bodies.h"   // SA_DialogEntityAlive
@@ -60,7 +61,7 @@ static int8_t DestroyUI_StateByte(const StateMachineComponent* buildState) {
 // ============================================================
 // DestroyComponent_CanReclaim (0x14011e690)
 // ============================================================
-// Returns true if the StateMachine's state byte is 6 (damaged) or 7.
+// Returns true if the StateMachine's state byte is 6 (Collapse) or 7 (Rubble).
 static bool DestroyComponent_CanReclaim_Impl(DestroyComponent* destroyComp)
 {
     if (!destroyComp) return false;
@@ -71,10 +72,10 @@ static bool DestroyComponent_CanReclaim_Impl(DestroyComponent* destroyComp)
 
     int8_t stateByte = DestroyUI_StateByte(buildState);
 
-    if (stateByte != 6) {
+    if (stateByte != StateByte(BuildingState::Collapse)) {
         // Check again (second pass from decompile)
         stateByte = DestroyUI_StateByte(buildState);
-        if (stateByte != 7) return false;
+        if (stateByte != StateByte(BuildingState::Rubble)) return false;
     }
     return true;
 }
@@ -139,7 +140,7 @@ static void DestroyComponent_Reclaim_Impl(DestroyComponent* destroyComp)
 
     int8_t stateFrom = buildState->stateMachine.activeState;
     ControllerComponent::Controller* node = buildState->stateMachine.current;
-    node->PostEvent(&buildState->stateMachine, (int)stateFrom, 0);
+    node->PostEvent(&buildState->stateMachine, (int)stateFrom, SmId(BuildingEvent::Cancel));
 
     // Also call the component's slot 4 — the "Reclaim" notification
     destroyComp->Startup();
@@ -152,7 +153,7 @@ static void DestroyComponent_Rebuild_Impl(DestroyComponent* destroyComp)
 
     int8_t stateFrom = buildState->stateMachine.activeState;
     ControllerComponent::Controller* node = buildState->stateMachine.current;
-    node->PostEvent(&buildState->stateMachine, (int)stateFrom, 0);
+    node->PostEvent(&buildState->stateMachine, (int)stateFrom, SmId(BuildingEvent::Rebuild));
 }
 
 static void DestroyComponent_Destroy_Impl(DestroyComponent* destroyComp)
@@ -162,7 +163,7 @@ static void DestroyComponent_Destroy_Impl(DestroyComponent* destroyComp)
 
     int8_t stateFrom = buildState->stateMachine.activeState;
     ControllerComponent::Controller* node = buildState->stateMachine.current;
-    node->PostEvent(&buildState->stateMachine, (int)stateFrom, 1);
+    node->PostEvent(&buildState->stateMachine, (int)stateFrom, SmId(BuildingEvent::Remove));
 }
 
 // ============================================================
@@ -253,7 +254,7 @@ void DestroyUI::OnCreated() {
 
     if (canReclaim || compFlag) {
         // Hide the reclaim button (SetFlagsOnOff: set flag 1 = hidden)
-        buttonReclaim->SetFlagsOnOff(1, 0);
+        buttonReclaim->SetFlagsOnOff(UI::kElementFlagHidden, 0);
     }
 }
 
@@ -295,12 +296,12 @@ void DestroyUI::OnUpdateLayout() {
         // --- Building is being demolished: show reclaim, update progress ---
 
         // Hide rebuild, destroy buttons and textDamage
-        if (buttonRebuild) buttonRebuild->SetFlagsOnOff(1, 0);
-        buttonDestroy->SetFlagsOnOff(1, 0);
-        if (textDamage) textDamage->SetFlagsOnOff(1, 0);
+        if (buttonRebuild) buttonRebuild->SetFlagsOnOff(UI::kElementFlagHidden, 0);
+        buttonDestroy->SetFlagsOnOff(UI::kElementFlagHidden, 0);
+        if (textDamage) textDamage->SetFlagsOnOff(UI::kElementFlagHidden, 0);
 
         // Show reclaim button
-        buttonReclaim->SetFlagsOnOff(0, 1);
+        buttonReclaim->SetFlagsOnOff(0, UI::kElementFlagHidden);
 
         // --- Update storage removal progress bar ---
         if (smComp != nullptr) {
@@ -347,9 +348,9 @@ void DestroyUI::OnUpdateLayout() {
         // --- Show/hide progress bars based on destruction state ---
         bool isDestroying = (destroyRatio != 0.0f);
         if (isDestroying) {
-            progressRemove->SetFlagsOnOff(1, 0);   // hide storage bar
+            progressRemove->SetFlagsOnOff(UI::kElementFlagHidden, 0);   // hide storage bar
         } else {
-            progressRemove->SetFlagsOnOff(0, 1);   // show storage bar
+            progressRemove->SetFlagsOnOff(0, UI::kElementFlagHidden);   // show storage bar
         }
         progressDestruct->SetFlagsOnOff(
                                  isDestroying ? 0 : 1,
@@ -359,20 +360,20 @@ void DestroyUI::OnUpdateLayout() {
         // The component's target description against the entity's own
         if (destroyComp->upgradeTarget == destroyComp->_entity->_description) {
             // Building state matches target → show "fixing" text
-            if (textFixing) textFixing->SetFlagsOnOff(0, 1);
-            if (textRemove) textRemove->SetFlagsOnOff(1, 0);
+            if (textFixing) textFixing->SetFlagsOnOff(0, UI::kElementFlagHidden);
+            if (textRemove) textRemove->SetFlagsOnOff(UI::kElementFlagHidden, 0);
             hideAtEnd = textUpgrade;
         } else {
             // Check if building can be rebuilt (upgraded)
             bool canRebuild = DestroyComponent_CanRebuild_Impl(destroyComp);
             if (!canRebuild) {
                 // Regular removal: show textRemove
-                if (textUpgrade) textUpgrade->SetFlagsOnOff(1, 0);
-                if (textRemove) textRemove->SetFlagsOnOff(0, 1);
+                if (textUpgrade) textUpgrade->SetFlagsOnOff(UI::kElementFlagHidden, 0);
+                if (textRemove) textRemove->SetFlagsOnOff(0, UI::kElementFlagHidden);
             } else {
                 // Can rebuild: show textUpgrade
-                if (textRemove) textRemove->SetFlagsOnOff(1, 0);
-                if (textUpgrade) textUpgrade->SetFlagsOnOff(0, 1);
+                if (textRemove) textRemove->SetFlagsOnOff(UI::kElementFlagHidden, 0);
+                if (textUpgrade) textUpgrade->SetFlagsOnOff(0, UI::kElementFlagHidden);
             }
             hideAtEnd = textFixing;
         }
@@ -386,33 +387,33 @@ void DestroyUI::OnUpdateLayout() {
         // Read state byte: prefer +0x52, fall back to +0x50 if negative
         int8_t stateByte = DestroyUI_StateByte(buildState);
 
-        // Element slot 8 (Enable) on buttonRebuild: enabled when state != 6
-        buttonRebuild->Enable(stateByte != 6);
+        // Element slot 8 (Enable) on buttonRebuild: enabled when state != Collapse
+        buttonRebuild->Enable(stateByte != StateByte(BuildingState::Collapse));
 
         // Retail finds the StateMachineComponent again for buttonDestroy and runs the
         // same test (0x140065c1d..0x140065c48: CMP CL,0x6 / SETNZ DL / CALL [RAX + 0x40])
         int8_t destroyStateByte = DestroyUI_StateByte(DestroyUI_FindStateMachine(compEntity));
-        buttonDestroy->Enable(destroyStateByte != 6);
+        buttonDestroy->Enable(destroyStateByte != StateByte(BuildingState::Collapse));
 
         // Show rebuild and destroy buttons
-        buttonRebuild->SetFlagsOnOff(0, 1);
-        buttonDestroy->SetFlagsOnOff(0, 1);
+        buttonRebuild->SetFlagsOnOff(0, UI::kElementFlagHidden);
+        buttonDestroy->SetFlagsOnOff(0, UI::kElementFlagHidden);
 
         // Show textDamage
-        if (textDamage) textDamage->SetFlagsOnOff(0, 1);
+        if (textDamage) textDamage->SetFlagsOnOff(0, UI::kElementFlagHidden);
 
         // Hide everything else
-        if (textFixing) textFixing->SetFlagsOnOff(1, 0);
-        if (textRemove) textRemove->SetFlagsOnOff(1, 0);
-        if (textUpgrade) textUpgrade->SetFlagsOnOff(1, 0);
-        progressRemove->SetFlagsOnOff(1, 0);
-        progressDestruct->SetFlagsOnOff(1, 0);
+        if (textFixing) textFixing->SetFlagsOnOff(UI::kElementFlagHidden, 0);
+        if (textRemove) textRemove->SetFlagsOnOff(UI::kElementFlagHidden, 0);
+        if (textUpgrade) textUpgrade->SetFlagsOnOff(UI::kElementFlagHidden, 0);
+        progressRemove->SetFlagsOnOff(UI::kElementFlagHidden, 0);
+        progressDestruct->SetFlagsOnOff(UI::kElementFlagHidden, 0);
 
         hideAtEnd = buttonReclaim;
     }
 
     // Hide the last element (buttonReclaim when reclaim active, or a text element)
-    if (hideAtEnd) hideAtEnd->SetFlagsOnOff(1, 0);
+    if (hideAtEnd) hideAtEnd->SetFlagsOnOff(UI::kElementFlagHidden, 0);
 }
 
 // ============================================================
@@ -425,10 +426,10 @@ void DestroyUI::OnUpdateLayout() {
 // Original: 0x140066080.
 
 // [9] 0x140066080
-void DestroyUI::OnElementEvent(Object::InternalPtr<UI::Element>* /*element*/, int32_t param3, int32_t param4,
+void DestroyUI::OnElementEvent(Object::InternalPtr<UI::Element>* /*element*/, UI::EventId param3, int32_t param4,
                                int32_t /*c*/, int32_t /*d*/, int32_t /*e*/, void* /*userData*/) {
     if (!SA_DialogEntityAlive(this)) return;
-    if (param3 != 0x12) return;
+    if (param3 != UI::EventId::Activated) return;
 
     // Get entity
     ComponentEntity* entity = DestroyUI_Entity(_dataSource);

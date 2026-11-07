@@ -17,7 +17,7 @@
 //   CitizenComponent, its fields read by name (home, careBuilding, hunger, coldness,
 //   description->_fcc / _fec / _f124, character->modelComponent whose transform
 //   +0x158/+0x15c/+0x160 = world pos, raw). Success epilogue writes field_0x30 = -1,
-//   statusFlags |= 4, field_0xB0 = 0 and returns 1. Cooldown-fail stamps Time(3.75) into
+//   statusFlags |= 4, lastErrand = None and returns 1. Cooldown-fail stamps Time(3.75) into
 //   timers[0] & timers[14] (Adult) or timers[1] & timers[15] (Elder) and returns 0.
 //
 // Registered exe sub-callees (resolved via ResolveAddr; bodies NOT duplicated):
@@ -112,8 +112,8 @@ static uint32_t ModelCell(const ModelComponent* model, const Map* mapGrid) {
 // success epilogue: set the action-state flags on the CitizenComponent and return 1.
 static uint64_t Pushed(CitizenComponent* cz) {
     cz->field_0x30 = -1;
-    cz->statusFlags |= 4;
-    cz->field_0xB0 = 0;
+    cz->statusFlags |= Bits(CitizenStatus::TaskDone);
+    cz->lastErrand = CitizenErrand::None;
     return 1;  // CONCAT71(cz>>8, 1): the caller reads the low byte
 }
 
@@ -176,9 +176,9 @@ uint64_t CitizenAIComponent::State_ElderTransition() {
     // cooldown stamp -> timers[1] & timers[15]
     System::Time stamp{};
     RtSystem_Time_Ctor(&stamp, kCooldown);
-    timers[1] = stamp;
+    timers[static_cast<int32_t>(CitizenAIState::Warm)] = stamp;
     RtSystem_Time_Ctor(&stamp, kCooldown);
-    timers[15] = stamp;
+    timers[static_cast<int32_t>(CitizenAIState::WarmUrgent)] = stamp;
     return static_cast<uint64_t>(stamp._ticks) & 0xffffffffffffff00ULL;
 }
 
@@ -261,9 +261,9 @@ uint64_t CitizenAIComponent::State_AdultTransition() {
                 // no target -> cooldown stamp (timers[0] & timers[14]) + return 0
                 System::Time stamp{};
                 RtSystem_Time_Ctor(&stamp, kCooldown);
-                timers[0] = stamp;
+                timers[static_cast<int32_t>(CitizenAIState::Eat)] = stamp;
                 RtSystem_Time_Ctor(&stamp, kCooldown);
-                timers[14] = stamp;
+                timers[static_cast<int32_t>(CitizenAIState::EatUrgent)] = stamp;
                 return static_cast<uint64_t>(stamp._ticks) & 0xffffffffffffff00ULL;
             }
         }
@@ -372,9 +372,9 @@ uint64_t CitizenAIComponent::State_Work() {
     float walkTime = citDesc ? citDesc->_f124 : 0.0f;
     CitizenAI_Pathfinding_WalkTowards_bb490(&holderCitizen, 0xffffffff, walkOut, 5, walkTime, 1);
 
-    citizen->statusFlags |= 4;
+    citizen->statusFlags |= Bits(CitizenStatus::TaskDone);
     citizen->field_0x30 = -1;
-    citizen->field_0xB0 = 0;
+    citizen->lastErrand = CitizenErrand::None;
     return 0;  // low byte 0 (retail's RAX carries the citizen pointer above it)
 }
 
