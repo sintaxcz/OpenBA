@@ -102,6 +102,8 @@ struct Extensions {
     bool fps_counter = false;  // class A: src/ext/fps_counter/, FrameLimiter::g_extGameFrame (docs/extensions/handins/FPSCOUNTER.md)
     // class A: src/ext/building_finder/ (docs/extensions/handins/BUILDINGFINDER.md)
     bool building_finder = false;
+    // class A: src/ext/dynamic_professions/ (docs/extensions/handins/DYNAMICPROFESSIONS.md)
+    bool dynamic_professions = false;
     bool tool_names = false;   // class C: src/ext/tool_names/ (docs/extensions/handins/TOOLNAMES.md)
     bool better_camera = false; // class B: src/ext/better_camera/ (docs/extensions/handins/BETTERCAM.md): zoom range 6 .. 200 + steady tilt
     bool high_limits = false;   // class B: src/ext/high_limits/ (docs/extensions/handins/HIGHLIMITS.md)
@@ -124,12 +126,16 @@ struct Extensions {
     bool better_trees = false; // class A: src/ext/better_trees/ (docs/extensions/handins/BETTER-TREES.md): smooth leaf edges + stable tree shading + edge dapple
     bool boat_lane = false;    // class B: src/ext/boat_lane/, seam BoatComponent::SetDestination (docs/extensions/handins/BOATLANE.md)
     bool winter_ice = true;    // class A, live: src/ext/winter_ice/, seam WorldGeometry's lake-range draw (docs/extensions/handins/WINTERICE.md)
+    bool walk_on_ice = false;  // class C: src/ext/winter_ice/ (owner winter_ice), citizens cross a solid lake (WINTERICE.md section 5)
     bool better_clouds = false; // class A, live: src/ext/better_clouds/, the sky material's pass slots + the material setup seam (docs/extensions/handins/BETTERCLOUDS.md)
     // class C: src/ext/restricted_foods/ (docs/extensions/handins/RESTRICTEDFOODS.md); the foods checked on the
     // Foods page are not eaten
     bool restricted_foods = false;
     // class C: src/ext/item_priority/ (docs/extensions/handins/ITEMPRIO.md); the town's ranked item lists
     bool item_priority = false;
+    // class B: src/ext/recipe_skip/ (docs/extensions/handins/RECIPESKIP.md); a workshop set to every recipe
+    // skips a recipe whose material is at its limit
+    bool recipe_skip = false;
     // class B: src/ext/terrain_edit/ (docs/extensions/handins/TERRAINEDIT.md); a brush tool that edits the
     // terrain under the mouse
     bool terrain_edit = false;

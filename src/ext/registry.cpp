@@ -338,6 +338,15 @@ const Entry kEntries[] = {
       "Zoom in much closer and out much farther, and keep the camera's tilt when zoomed out "
       "instead of flattening to top-down.",
       1, [](State& s) -> bool& { return s.ext.better_camera; } },
+    // RECIPESKIP (docs/extensions/handins/RECIPESKIP.md): a workshop set to every recipe stops, in retail, as
+    // soon as ONE recipe's material is at its limit. With the row on that recipe is left out of the draw and
+    // the building only stops when every recipe is at its limit. Class B: no serialized state, but the
+    // town's production differs from retail's, so it is locked for the game and recorded in the save.
+    { "recipe_skip", Tier::Extension, Class::B, false,
+      "Skip recipes at their limit",
+      "A workshop that makes every recipe in turn keeps working on the others when one recipe's limit "
+      "is reached, instead of stopping.",
+      1, [](State& s) -> bool& { return s.ext.recipe_skip; } },
     // HIGHLIMITS (docs/extensions/handins/HIGHLIMITS.md): the limit spinners of the Town Hall, the Limits
     // window and the production buildings take values up to 999,999,999 and 9 typed digits instead of
     // 999,999 and 6. Class B: no serialized state, but a limit above 999,999 is a value the faithful
@@ -462,6 +471,15 @@ const Entry kEntries[] = {
       "Lakes and rivers freeze over in cold winters: ice grows from the banks inward and melts from the "
       "sides in spring. The trade boats' channel stays open.",
       0, [](State& s) -> bool& { return s.ext.winter_ice; } },
+    // WALKONICE (docs/extensions/handins/WINTERICE.md section 5): while a lake is frozen solid from bank to bank
+    // its cells are open to walkers (never a river, never the open water round a dock or along the boat
+    // channel). Class C: the ice is the town's own state, kept in the save's tail
+    // (src/ext/winter_ice/ice_town.cpp), so the lake opens on the same day after a reload. Owner winter_ice.
+    { "walk_on_ice", Tier::Extension, Class::C, false,
+      "Walk on ice",
+      "Citizens and animals can cross a lake while it is frozen solid in winter. Rivers stay a barrier. Play "
+      "diverges; the ice is recorded in the save.",
+      1, [](State& s) -> bool& { return s.ext.walk_on_ice; } },
     // BETTERCLOUDS (docs/extensions/handins/BETTERCLOUDS.md): the sky draws with a pixel program of ours,
     // procedural clouds drifting down the wind over the painted sky blurred; the mode below adds Fancy.
     // Class A: drawing only, nothing saved, live; ON by default (the standing class A rule).
@@ -711,6 +729,17 @@ const Entry kEntries[] = {
       "Adds a Find Buildings page to the extension window: search every building by name, and keep a list of "
       "favorites you can start placing with one click.",
       0, [](State& s) -> bool& { return s.ext.building_finder; } },
+    // DYNAMICPROFESSIONS (docs/extensions/handins/DYNAMICPROFESSIONS.md): the toolbar's Professions button
+    // opens a window that lists only the professions the town can use (the laborer and the builder always,
+    // then every profession with a workplace built or a citizen in it), in place of retail's list of all of
+    // them. Class A: it only reads the town and moves citizens between professions with retail's own calls;
+    // nothing is kept.
+    // OFF by default: it replaces a window the player knows.
+    { "dynamic_professions", Tier::Extension, Class::A, false,
+      "Dynamic professions",
+      "Replaces the Professions window with one that lists only the professions your town can use: the "
+      "laborer and builder, and any profession with a workplace built or a citizen working at it.",
+      0, [](State& s) -> bool& { return s.ext.dynamic_professions; } },
     // TOOLNAMES (docs/extensions/handins/TOOLNAMES.md): the citizen panel names the tool the citizen carries
     // (the item's own name) instead of retail's "default tool / other tool" words. Class C: which tool each
     // citizen carries is the town's own state, recorded in the save's tail so a tool keeps its name across a
