@@ -235,6 +235,9 @@ bool Bundle::AddChunk(std::vector<uint8_t> chunk) {
     const uint32_t count = ChunkRecordCount(chunk);
     if (count == 0) return false;
     if (chunk.size() % 8 != 0) return false;
+    // No record is smaller than its header: a count the chunk cannot hold is refused before the
+    // reserve, which would otherwise ask for 72 bytes per claimed record (309 GB for 0xFFFFFFFF).
+    if (count > (chunk.size() - kChunkHeader) / kRecordHeader) return false;
     std::vector<std::pair<uint64_t, RecordView>> parsed;
     parsed.reserve(count);
     const uint8_t* const base = chunk.data();
@@ -254,6 +257,10 @@ bool Bundle::AddChunk(std::vector<uint8_t> chunk) {
         if (v.blockCount == 0 || 4 + static_cast<uint64_t>(v.blockCount) * 8 > v.id.size) return false;
         if (at + static_cast<size_t>(v.blockCount) * 8 > size) return false;
         if (DirectoryTotal(v.head) != v.total) return false;
+        // Hostile-cache hardening (review F-234). A full 0x10000th block makes the total 0x80000000 or
+        // more; SegmentStream's int32 position cannot reach the end of such a stream without signed
+        // overflow, and no package stream is that long (CompressedStream sizes are int32).
+        if (v.total > 0x7FFFFFFFu) return false;
         at += static_cast<size_t>(v.blockCount) * 8;
         if (v.segCount == 0 || v.segCount > kRecordMax) return false;
         if (at + static_cast<size_t>(v.segCount) * 8 > size) return false;

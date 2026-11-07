@@ -33,6 +33,7 @@
 #include "graphics/Mesh.h"          // B.3.x W0: Shutdown deletes m_skyMesh by name
 #include "sampler.h"
 #include "options.h"
+#include "clamped_atoi.h"     // review F-087: atoi on BANISHED_* text
 #include "Game/GameUpdateLoop.h"   // ENDGAME B.3.8 LOOP: the real class
 #include "Game/WorldGeometry.h"    // caller batch CB6: m_worldGeometry's class
 #include "Player/Tool.h"            // caller batch CB6: the active tool's Draw
@@ -67,6 +68,9 @@
 // EXT SEAM (NOT RETAIL, docs/extensions/handins/FAMILYTREE.md): ext.family_tree (class C),
 // Ext::FamilyTree::BeginFrame
 #include "ext/family_tree/family_tree.h"
+// EXT SEAM (NOT RETAIL, docs/extensions/handins/MAPOVERLAYS.md): ext.map_overlays (class C),
+// Ext::MapOverlays::BeginFrame
+#include "ext/map_overlays/map_overlays.h"
 #include "ext/spread_warmth/spread_warmth.h"   // EXT SEAM (NOT RETAIL, docs/extensions/handins/HITCH_PFBURST.md): ext.spread_warmth (class B), Ext::SpreadWarmth::BeginFrame
 // EXT SEAM (NOT RETAIL, docs/extensions/handins/RESTRICTEDFOODS.md):
 // ext.restricted_foods (class C), Ext::RestrictedFoods::BeginFrame
@@ -79,7 +83,11 @@
 // EXT SEAM (NOT RETAIL, docs/extensions/handins/TOOLNAMES.md):
 // ext.tool_names (class C), Ext::ToolNames::BeginFrame
 #include "ext/tool_names/tool_names.h"
+// ext.building_finder (class A), Ext::BuildingFinder::BeginFrame
+#include "ext/building_finder/building_finder.h"
 #include "ext/drain_split/drain_split.h"       // EXT SEAM (NOT RETAIL, docs/extensions/handins/HITCH_DRAINSPLIT.md): ext.drain_split (class B), Ext::DrainSplit::BeginFrame
+#include "ext/winter_ice/winter_ice.h"         // EXT SEAM (NOT RETAIL, docs/extensions/handins/WINTERICE.md): ext.winter_ice (class A), Ext::WinterIce::BeginFrame
+#include "ext/better_clouds/better_clouds.h"   // EXT SEAM (NOT RETAIL, docs/extensions/handins/BETTERCLOUDS.md): ext.better_clouds (class A), Advance / BeginFrame / Forget
 #include "Game/terrain_sidecar.h" // the terrain-type mirror's teardown (faithful perf work)
 #include <cstdio>
 #include <cstring>
@@ -144,7 +152,7 @@ extern "C" void BuildingGoal_Probe(const char* templateName);  // src/game/Goal/
 #include "ext/sharp_ui/sharp_ui.h"       // EXT SEAM (NOT RETAIL, docs/extensions/handins/SHARPUI.md): ext.sharp_ui, Draw step 12
 #include "ext/ambient_occlusion/ambient_occlusion.h"     // EXT SEAM (NOT RETAIL, docs/extensions/AO.md): ext.ambient_occlusion, Draw step 7
 #include "ext/touch_pointer/touch_pointer.h"   // EXT SEAM (NOT RETAIL, docs/android/P11B_POINTER.md): ext.touch_pointer, Draw step 11 (ToolAimHeld)
-#include "ext/show_grid/show_grid.h"   // EXT SEAM (NOT RETAIL, SHOWGRID.md): ext.show_grid, Draw step 11
+#include "ext/ground_draw.h"   // EXT SEAM (NOT RETAIL, MAPOVERLAYS.md): the ground draw, Draw step 7
 #include "load_time.h"   // [LoadTime] stamps (NOT RETAIL, print-only; block LOADSTAMP)
 #include "Game/cell_stamp.h"   // AMBMEMO: CellStamp::Invalidate at teardown
 #include "Component/AmbientEnvironmentComponent.h"   // AMBMEMO: ReportMemo at teardown
@@ -527,7 +535,7 @@ long long g_profSimIters = 0;
 inline bool SimProfOn() {
     if (g_simProfOn < 0) {
         const char* e = Opt().simprof;
-        int n = (e && e[0] && e[0] != '0') ? std::atoi(e) : 0;
+        int n = (e && e[0] && e[0] != '0') ? ClampedAtoi(e) : 0;
         if (e && e[0] && e[0] != '0' && n <= 1) n = 120;   // "1" => default interval
         g_simProfOn = n;
         if (n) { int64_t f; Platform::PerfFrequency(&f); g_qpcFreq = f; }
@@ -593,7 +601,7 @@ int g_forceSpeed = -1;
 inline void ApplyForceSpeed(PlayerToolManager* toolManager) {
     if (g_forceSpeed < 0) {
         const char* e = Opt().forceSpeed;
-        g_forceSpeed = (e && e[0]) ? std::atoi(e) : 0;
+        g_forceSpeed = (e && e[0]) ? ClampedAtoi(e) : 0;
     }
     if (g_forceSpeed > 0 && toolManager) {
         toolManager->paused = false;               // not paused
@@ -671,6 +679,9 @@ bool GameUpdateLoop::Update(const System::Time& timeRef) {
     // EXT SEAM (NOT RETAIL, docs/extensions/handins/FAMILYTREE.md): ext.family_tree (C) read once per frame,
     // the load bind and the sweep
     Ext::FamilyTree::BeginFrame();
+    // EXT SEAM (NOT RETAIL, docs/extensions/handins/MAPOVERLAYS.md): ext.map_overlays (C) read once per frame,
+    // the map size and the month of the history
+    Ext::MapOverlays::BeginFrame();
     Ext::SpreadWarmth::BeginFrame();         // EXT SEAM (NOT RETAIL, docs/extensions/handins/HITCH_PFBURST.md): ext.spread_warmth (B) read once per frame, its budget reset
     // EXT SEAM (NOT RETAIL, docs/extensions/handins/RESTRICTEDFOODS.md): ext.restricted_foods (C) read once per frame
     Ext::RestrictedFoods::BeginFrame();
@@ -679,6 +690,15 @@ bool GameUpdateLoop::Update(const System::Time& timeRef) {
     // EXT SEAM (NOT RETAIL, docs/extensions/handins/TOOLNAMES.md): ext.tool_names (C) drops the notes and
     // waiting records of citizens who are gone
     Ext::ToolNames::BeginFrame();
+    // EXT SEAM (NOT RETAIL, docs/extensions/handins/BUILDINGFINDER.md): ext.building_finder (A) reads its
+    // hotkey once per frame
+    Ext::BuildingFinder::BeginFrame(m_userInterface);
+    // EXT SEAM (NOT RETAIL, docs/extensions/handins/WINTERICE.md): ext.winter_ice (A) advances the lake ice
+    // from the calendar and the temperature, keeps its textures and the open-water mask
+    Ext::WinterIce::BeginFrame();
+    // EXT SEAM (NOT RETAIL, docs/extensions/handins/BETTERCLOUDS.md): ext.better_clouds (A) points the sky
+    // material's passes at the cloud programs while the row is on, publishes the frame's cloud constants
+    Ext::BetterClouds::BeginFrame();
     Ext::DrainSplit::BeginFrame();           // EXT SEAM (NOT RETAIL, docs/extensions/handins/HITCH_DRAINSPLIT.md): ext.drain_split (B) read once per frame, the owed half's frame count
 
     // [EVENTS] RETIRED: the BANISHED_LIVE_EVENTS resource-shortage scanner used to
@@ -884,6 +904,9 @@ bool GameUpdateLoop::Update(const System::Time& timeRef) {
         if (speedMultiplier > 0) {
             // Accumulate game time
             m_gameTime += time->_ticks;
+            // EXT SEAM (NOT RETAIL, docs/extensions/handins/BETTERCLOUDS.md): ext.better_clouds' clouds move at
+            // the game's speed (the frame time times the simulation steps below, capped at 3x)
+            Ext::BetterClouds::Advance(*time, speedMultiplier);
             TRACE("[GameUpdateLoop::Update] gameTime updated to %lld\n", (long long)m_gameTime);
         }
 
@@ -1269,7 +1292,7 @@ post_simulation:
             // A ",ui" suffix (tools/device_sim.sh) raises the quickload bit instead: Draw's step 13 takes
             // the same shot after the interface is drawn, as retail's with-UI screenshot key does.
             static const char* const ssEnv = Opt().screenshotAt;
-            static const int32_t ssAt = ssEnv ? std::atol(ssEnv) : -1;
+            static const int32_t ssAt = ssEnv ? ClampedAtoi(ssEnv) : -1;
             static const bool ssWithUi = ssEnv != nullptr && std::strstr(ssEnv, ",ui") != nullptr;
             static int32_t ssFrame = 0;
             static bool ssFired = false;
@@ -1441,7 +1464,7 @@ void GameUpdateLoop::Draw(float alpha) {
         static int s_capArm = -2;      // -2=unread, -1=disabled, >=0 = countdown to arm
         if (s_capArm == -2) {
             const char* e = Opt().captureIngame;
-            s_capArm = (e && e[0]) ? (atoi(e) > 0 ? atoi(e) : 120) : -1;
+            s_capArm = (e && e[0]) ? (ClampedAtoi(e) > 0 ? ClampedAtoi(e) : 120) : -1;
         }
         if (s_capArm >= 0) {
             if (s_capArm == 0) {
@@ -1529,7 +1552,7 @@ void GameUpdateLoop::Draw(float alpha) {
         if (s_forceSnow < 0) {
             const char* e = Opt().forceSnow;
             s_forceSnow = (e && e[0]) ? 1 : 0;
-            if (s_forceSnow) s_snowVal = (float)atof(e);
+            if (s_forceSnow) s_snowVal = ClampedAtof(e);   // F-087: a double beyond float range
         }
         if (s_forceSnow) {
             videoCtx->_unknown03b8.x = s_snowVal;
@@ -1582,6 +1605,11 @@ void GameUpdateLoop::Draw(float alpha) {
         // arms Graphics::Renderer::_extAo for this one Draw (the game's main scene
         // only: the menu backdrop and the minimap never come through here).
         const bool aoArmed = Ext::AmbientOcclusion::Enabled() && Ext::AmbientOcclusion::Arm(*m_playerController);
+        // EXT SEAM (NOT RETAIL, docs/extensions/handins/MAPOVERLAYS.md, SHOWGRID.md): ext.map_overlays and
+        // ext.show_grid arm the ground draw (Graphics::Renderer::_extGroundDraw) for this one Draw: the heat
+        // map and the tile grid lie on the ground, under the water, the particles and the status icons. Both
+        // rows off: null.
+        Graphics::Renderer::_extGroundDraw = Ext::GroundDraw();
         // EXT SEAM (NOT RETAIL, docs/extensions/handins/EYECAM.md §9): while
         // ext.eye_camera follows a citizen, the same Renderer::Draw with the
         // sun's shadow camera fitted to a view over the citizen (retail's fit
@@ -1599,6 +1627,7 @@ void GameUpdateLoop::Draw(float alpha) {
                 *m_graphicsScene,
                 m_playerController->camera);
         if (aoArmed) Ext::AmbientOcclusion::Disarm();
+        Graphics::Renderer::_extGroundDraw = nullptr;
     }
     TRACE("[GameUpdateLoop::Draw] Renderer::Draw done\n");
 
@@ -1666,10 +1695,6 @@ void GameUpdateLoop::Draw(float alpha) {
         if (hasInput && Ext::Ext().touch_pointer && Ext::TouchPointer::ToolAimHeld(tool))
             hasInput = false;
         uint64_t drawFlag = (hasInput || pauseCheck) ? 1 : 0;
-        // EXT SEAM (NOT RETAIL, docs/extensions/handins/SHOWGRID.md): ext.show_grid draws its tile grid under
-        // the tool, whether or not one is selected. Row off: nothing.
-        if (Ext::Ext().show_grid && Ext::ShowGrid::Shown())
-            Ext::ShowGrid::Draw(videoCtx);
         if (tool) {
             // Caller batch CB6: slot 8 (vtable +0x40) `Tool::Draw(context, active)`.
             // The receiver is PROVED by its only writer, Toolbar_ShowGroup_Impl
@@ -2129,6 +2154,9 @@ void GameUpdateLoop::Shutdown() {
         gs->RemoveGlobalObject(m_worldGeometry);
         gs->RemoveGlobalObject(m_sunLight);
         gs->RemoveGlobalObject(m_skyMesh);
+        // EXT SEAM (NOT RETAIL, docs/extensions/handins/BETTERCLOUDS.md): ext.better_clouds puts the sky
+        // material's own programs back before the world (and the material with it) can go.
+        Ext::BetterClouds::Forget();
         // EXT SEAM (NOT RETAIL, docs/extensions/NATURAL_GROWTH.md §7): natural tree growth's falling leaves.
         Ext::BetterTrees::LeavesShutdown(gs);
     }
@@ -2420,6 +2448,10 @@ GameUpdateLoop::~GameUpdateLoop() {
 
     // Step 2: Clear game world singleton
     _singleton = nullptr;
+
+    // EXT SEAM (NOT RETAIL, docs/extensions/handins/TOWNSCREENSHOT.md): a town screenshot this loop was taking
+    // ends with it (review F-263: left running, it switched the next game's status icons and weather off).
+    Ext::TownScreenshot::GameEnded(this);
 
     // EXT SEAM (NOT RETAIL, docs/extensions/handins/EXTSCAFFOLD.md): release this loop's class B / C lock (ignored
     // when a reload's new loop already holds it). Releasing it also empties the class C state.

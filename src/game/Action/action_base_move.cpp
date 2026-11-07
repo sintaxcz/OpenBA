@@ -20,6 +20,7 @@
 #include "Game/exe_bodies.h"       // Reimpl_MapGetTerrainPos
 #include "Game/exe_constants.h"   // kRdata_140172114
 #include "io/Serializer.h"   // ENDGAME B.3.4 caller batch C
+#include "Action/saved_bounds.h"
 #include "Object/factory_registration.h"
 #include "system/String.h"
 #include "system/Filename.h"
@@ -41,6 +42,7 @@
 #include "Game/WorkScheduler.h"
 #include "Game/WorkSchedulerNodes.h"   // WorkSchedulerIdNode (the id trees' node)
 #include "stress_harness.h"   // PFBENCH: g_pfProfOn / PfProf_Taken (stress harness only)
+#include "ext/map_overlays/map_overlays.h"   // EXT SEAM (NOT RETAIL, docs/extensions/handins/MAPOVERLAYS.md): ext.map_overlays
 
 // ============================================================
 // Locally-resolved dispatch-slot / math helpers
@@ -99,6 +101,11 @@ void MoveTo::UpdateFacing() {
     int targetCell = path[curIdx];
 
     int gridW = grid->size;
+    if (Ext::MapOverlays::g_on && curIdx > 1) {
+        // ext.map_overlays: a footstep, the waypoint just reached (path[0] is the start cell, not entered)
+        const int reached = path[curIdx - 1];
+        Ext::MapOverlays::OnStep(reached % gridW, reached / gridW);
+    }
     float center = static_cast<float>(gridW >> 1) - halfCell;
     float inGrid[3];
     inGrid[0] = static_cast<float>(targetCell % gridW) - center;  // local_58
@@ -382,10 +389,7 @@ bool MoveTo::PathSetup(const float* worldPos) {
     float center = static_cast<float>(width >> 1);
 
     auto clamp = [&](float f) -> int {
-        int v = static_cast<int>(f);
-        if (v < 0) v = 0;
-        if (v >= width) v = width - 1;
-        return v;
+        return ActionBounds::WorldToCellAxis(f, width);   // CVTTSS2SI, then [0, width-1]
     };
 
     int tx = clamp(center + worldPos[0]);

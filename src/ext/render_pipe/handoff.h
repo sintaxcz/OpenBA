@@ -7,6 +7,13 @@
 // Standard C++ only (std::mutex / std::condition_variable / std::atomic, as
 // src/ext/path_workers/pool.h): the unit test drives it with a std::thread.
 //
+// SENT MESSAGES (review F-224). The main thread owns the window; the render thread's
+// Present (DXGI in exclusive fullscreen) or a BeginCommands that resizes may SEND it a
+// message, which completes only once the main thread runs it. So the main thread's waits
+// (ClaimSteps, WaitIdle, WaitReleased) wake every millisecond to run the sent messages
+// (Platform::DispatchSentMessages, never a posted one) where the platform has them, and
+// park on the plain condition variable where it does not.
+//
 // ONE job slot. The main thread writes the job (the packet, held by the caller)
 // and then Publish()es it; the render thread blocks in WaitJob() until a job or
 // Stop() arrives, runs it, writes its result (held by the caller) and calls
@@ -48,18 +55,23 @@
 //            render: WaitJob returns false, Run returns, ~Thread joins
 //   gate     P13_OVERLAP (docs/android/P13_OVERLAP.md). Open by default: a job
 //            whose main thread does not step goes straight through.
-//            main, before steps beside the job: ClaimSteps locks; if the job is
-//            not past its gate, gate = false (true returned) -- else false, and
-//            the caller keeps THE FENCE. main, the steps over: OpenGate locks;
+//            main, before steps beside the job: ClaimSteps locks and waits until
+//            the job's BeginCommands returned (NoteBegun), it passed its gate or it
+//            is done; if it is not past its gate, gate = false (true returned) --
+//            else false, and the caller keeps THE FENCE. Review F-158:
+//            BeginCommands reads live device state a step writes (the message
+//            pump's SizeWindow, the options apply: Device::settingsChanged and the
+//            back-buffer size), and a set flag makes it resize the swap chain and
+//            the window from the render thread; no step runs before it returned. main, the steps over: OpenGate locks;
 //            gate = true; notify. render: WaitGate locks, waits for gate, marks
 //            itself past it -> every step write happens-before the rest of the
 //            job, and no step runs beside it. WaitIdle opens it first: a main
 //            thread that waits for the job has stopped stepping.
 //   governor P13_OVERLAP section 10 (overlap_governor.h): two timestamps, steady
 //            clock us. PassGate records when the job parked (read by OpenGate
-//            under the lock); NoteBegun, when its BeginCommands returned (an
-//            atomic stored before Release / PassGate, read after WaitReleased /
-//            OpenGate, whose locks order it). Measures only: nothing waits on them.
+//            under the lock); NoteBegun, when its BeginCommands returned (stored
+//            under the lock, read after WaitReleased / OpenGate, whose locks order
+//            it). ClaimSteps waits for NoteBegun (above); the rest only measure.
 // ============================================================================
 #pragma once
 
@@ -68,6 +80,9 @@
 #include <cstdint>
 #include <condition_variable>
 #include <mutex>
+
+#include "system/annotated_mutex.h"   // Sys::Mutex / Sys::MutexLock (clang -Wthread-safety)
+#include "platform_thread.h"   // Platform::DispatchSentMessages (review F-224)
 
 namespace Ext {
 namespace RenderPipe {
@@ -79,7 +94,7 @@ public:
     // render thread must be idle (the caller joined it first: depth 1).
     void Publish() {
         {
-            std::lock_guard<std::mutex> lk(_m);
+            Sys::MutexLock lk(_m);
             _ready  = true;
             _gate   = true;
             _passed = false;
@@ -91,10 +106,16 @@ public:
         _work.notify_one();
     }
 
-    // P13_OVERLAP: steps are about to run beside the job. True: it had not reached its gate and
-    // now waits there until OpenGate. False: it is past its gate (or done) -- keep the fence.
+    // P13_OVERLAP: steps are about to run beside the job. Waits until its BeginCommands returned
+    // (review F-158: that op reads device state the steps write). True: it had not reached its
+    // gate and now waits there until OpenGate. False: it is past its gate (or done) -- keep the
+    // fence.
     bool ClaimSteps() {
-        std::lock_guard<std::mutex> lk(_m);
+        Sys::MutexLock lk(_m);
+        MainWait(lk, [this]() REQUIRES(_m) {
+            return _begunUs.load(std::memory_order_relaxed) != 0 || _passed ||
+                   !_busy.load(std::memory_order_acquire);
+        });
         if (_passed || !_busy.load(std::memory_order_acquire)) return false;
         _gate = false;
         return true;
@@ -105,7 +126,7 @@ public:
     int64_t OpenGate() {
         int64_t parked = 0;
         {
-            std::lock_guard<std::mutex> lk(_m);
+            Sys::MutexLock lk(_m);
             if (_gate) return 0;
             _gate  = true;
             parked = _parkedUs;
@@ -118,16 +139,16 @@ public:
     bool WaitIdle() {
         if (!_busy.load(std::memory_order_acquire)) return false;
         OpenGate();
-        std::unique_lock<std::mutex> lk(_m);
-        _idle.wait(lk, [this] { return !_busy.load(std::memory_order_acquire); });
+        Sys::MutexLock lk(_m);
+        MainWait(lk, [this]() REQUIRES(_m) { return !_busy.load(std::memory_order_acquire); });
         return true;
     }
 
     // Block until the job released itself (Release) or is done. True when it had to wait.
     bool WaitReleased() {
         if (_released.load(std::memory_order_acquire)) return false;
-        std::unique_lock<std::mutex> lk(_m);
-        _idle.wait(lk, [this] { return _released.load(std::memory_order_acquire); });
+        Sys::MutexLock lk(_m);
+        MainWait(lk, [this]() REQUIRES(_m) { return _released.load(std::memory_order_acquire); });
         return true;
     }
 
@@ -140,7 +161,7 @@ public:
     // The render thread is idle (WaitIdle returned): make its WaitJob return false.
     void Stop() {
         {
-            std::lock_guard<std::mutex> lk(_m);
+            Sys::MutexLock lk(_m);
             _stop = true;
         }
         _work.notify_one();
@@ -149,8 +170,8 @@ public:
     // ---- the render thread -----------------------------------------------
     // Park until a job (true) or Stop (false).
     bool WaitJob() {
-        std::unique_lock<std::mutex> lk(_m);
-        _work.wait(lk, [this] { return _ready || _stop; });
+        Sys::MutexLock lk(_m);
+        _work.wait(lk.Native(), [this]() REQUIRES(_m) { return _ready || _stop; });
         if (_ready) {
             _ready = false;
             return true;
@@ -161,7 +182,7 @@ public:
     // P13_OVERLAP: past the gate at once when no steps claimed it (true); false: they did, and
     // the caller parks in WaitGate (after dropping what a step may need).
     bool PassGate() {
-        std::lock_guard<std::mutex> lk(_m);
+        Sys::MutexLock lk(_m);
         if (!_gate) {
             // The governor's measure (overlap_governor.h): how far the job ran beside the steps.
             _parkedUs = std::chrono::duration_cast<std::chrono::microseconds>(
@@ -175,23 +196,28 @@ public:
     // P13_OVERLAP: park while the main thread's steps run (ClaimSteps .. OpenGate); from here on
     // no step runs beside the job.
     void WaitGate() {
-        std::unique_lock<std::mutex> lk(_m);
-        _work.wait(lk, [this] { return _gate || _stop; });
+        Sys::MutexLock lk(_m);
+        _work.wait(lk.Native(), [this]() REQUIRES(_m) { return _gate || _stop; });
         _passed = true;
     }
 
     // The job's BeginCommands returned: what it waited for until here (a free swap-chain image,
-    // a frame in flight) was the GPU or the display, not its own work.
+    // a frame in flight) was the GPU or the display, not its own work. Under the lock and
+    // notified: a ClaimSteps waits for it (review F-158).
     void NoteBegun() {
-        _begunUs.store(std::chrono::duration_cast<std::chrono::microseconds>(
-                           std::chrono::steady_clock::now().time_since_epoch()).count(),
-                       std::memory_order_relaxed);
+        const int64_t now = std::chrono::duration_cast<std::chrono::microseconds>(
+                                std::chrono::steady_clock::now().time_since_epoch()).count();
+        {
+            Sys::MutexLock lk(_m);
+            _begunUs.store(now != 0 ? now : 1, std::memory_order_relaxed);
+        }
+        _idle.notify_one();
     }
 
     // The part of the job the fence waits for is complete; the rest may still run.
     void Release() {
         {
-            std::lock_guard<std::mutex> lk(_m);
+            Sys::MutexLock lk(_m);
             _released.store(true, std::memory_order_release);
         }
         _idle.notify_one();
@@ -200,7 +226,7 @@ public:
     // The job and its result are complete. busy first: see the ordering banner.
     void Done() {
         {
-            std::lock_guard<std::mutex> lk(_m);
+            Sys::MutexLock lk(_m);
             _busy.store(false, std::memory_order_release);
             _released.store(true, std::memory_order_release);
         }
@@ -208,14 +234,35 @@ public:
     }
 
 private:
-    std::mutex              _m;
+    // The main thread's wait on _idle until `done` (lk held): see SENT MESSAGES in the banner.
+    // The lock is dropped while the window procedures run (review F-224), so the analysis is off here.
+    template <class Done>
+    void MainWait(Sys::MutexLock& lk, Done done) NO_THREAD_SAFETY_ANALYSIS {
+        if (done()) return;
+        lk.Unlock();
+        const bool sent = Platform::DispatchSentMessages();
+        lk.Lock();
+        if (!sent) {
+            _idle.wait(lk.Native(), done);
+            return;
+        }
+        while (!_idle.wait_for(lk.Native(), std::chrono::milliseconds(1), done)) {
+            lk.Unlock();
+            Platform::DispatchSentMessages();
+            lk.Lock();
+        }
+    }
+
+    // GUARDED_BY: checked by clang's thread-safety analysis (system/thread_annotations.h). The three
+    // atomics are the lock-free fast paths of the ordering banner, not guarded.
+    Sys::Mutex              _m;
     std::condition_variable _work;
     std::condition_variable _idle;
-    bool                    _ready = false;   // guarded by _m
-    bool                    _stop  = false;   // guarded by _m
-    bool                    _gate  = true;    // guarded by _m; P13_OVERLAP: false from ClaimSteps to OpenGate
-    bool                    _passed = false;  // guarded by _m; P13_OVERLAP: the job is past its gate
-    int64_t                 _parkedUs = 0;    // guarded by _m; P13_OVERLAP: when it parked at the gate (0: not)
+    bool                    _ready GUARDED_BY(_m) = false;
+    bool                    _stop GUARDED_BY(_m)  = false;
+    bool                    _gate GUARDED_BY(_m)  = true;     // P13_OVERLAP: false from ClaimSteps to OpenGate
+    bool                    _passed GUARDED_BY(_m) = false;   // P13_OVERLAP: the job is past its gate
+    int64_t                 _parkedUs GUARDED_BY(_m) = 0;     // P13_OVERLAP: when it parked at the gate (0: not)
     std::atomic<bool>       _busy{false};
     std::atomic<bool>       _released{true};   // RENDERPIPE_FENCE: false from Publish to Release / Done
     std::atomic<int64_t>    _begunUs{0};        // P13_OVERLAP: when BeginCommands returned (NoteBegun)

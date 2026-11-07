@@ -4,6 +4,7 @@
 #include "retire_pool.h"
 #include "shader_cache.h"
 #include "inline_bytes.h"
+#include "draw_bounds.h"
 #include "device_support.h"
 #include "platform/common/platform_window_hooks.h"
 #include "system/Error.h"
@@ -15,6 +16,7 @@
 #include "share_gpu_data/share_create.h"
 #include "create_on_demand/lazy_create.h"
 #include "seeded_create.h"
+#include "depth_bias.h"
 #include "video/Device.h"
 #include "platform/common/cursor_image.h"
 #include "video/Buffers.h"
@@ -246,6 +248,11 @@ static void RenameBuffer(id<MTLBuffer> __strong& buffer, bool preserve) {
             InvalidateExpanded(fresh);
         } else {
             fresh = NewBuffer(previous.length, "rename");
+            if (!fresh) {
+                // The allocation failed (nil): keep the busy buffer and write it in place. A frame still in flight
+                // may show the new contents early; a nil buffer would take a NULL write and lose the binding.
+                return;
+            }
         }
         if (preserve) {
             memcpy(fresh.contents, previous.contents, previous.length);
@@ -395,10 +402,10 @@ static id<MTLRenderPipelineState> Pipeline() {
     desc.stencilAttachmentPixelFormat = desc.depthAttachmentPixelFormat;
     desc.rasterSampleCount = samples;
     auto state = CachedPipeline(desc, bound.vs, bound.ps, true);
-    if (state) {
-        pipelines.Insert(key, state, { vf, pf, layout, blendKey });
-        if (pipelines.Size() <= 15) fprintf(stderr, "[Metal] pipeline %zu created\n", pipelines.Size());
-    }
+    // A descriptor Metal rejected is cached as nil too: the draws that bind it are skipped without compiling it
+    // (and printing its error) again on every draw. The entry goes with its owners like any other.
+    pipelines.Insert(key, state, { vf, pf, layout, blendKey });
+    if (state && pipelines.Size() <= 15) fprintf(stderr, "[Metal] pipeline %zu created\n", pipelines.Size());
     return state;
 }
 // DXMT's SM50 tables contain GPU addresses/resource IDs, indexed in qwords by
@@ -540,10 +547,12 @@ static void Draw(Video::Context* ctx, int primitive, int count, int instances, b
                 continue;
             }
             size_t begin = bound.vertexOffsets[slot];
-            if (begin >= source.length) {
-                continue;   // an offset past the end has nothing to expand (and would underflow the count)
+            // Nothing to expand for an offset past the end, or for a layout offset that puts the UChar4 outside
+            // the vertex (the layout comes from the resource; draw_bounds.h). The draw goes on with slot 7 unbound.
+            size_t n = WidenCount(source.length, begin, stride, a.offset);
+            if (!n) {
+                continue;
             }
-            size_t n = (source.length - begin) / stride;
             std::string key;
             auto address = source.gpuAddress;
             Key(key, address);
@@ -573,6 +582,9 @@ static void Draw(Video::Context* ctx, int primitive, int count, int instances, b
             int32_t* dst = inlineStorage;
             if (!inlineBytes) {
                 expanded = NewBuffer(expandedBytes, "expanded-vertex");
+                if (!expanded) {
+                    continue;   // the allocation failed (nil): no expansion this draw, as for the other skips
+                }
                 dst = static_cast<int32_t*>(expanded.contents);
             }
             memset(dst, 0, expandedBytes);
@@ -598,8 +610,10 @@ static void Draw(Video::Context* ctx, int primitive, int count, int instances, b
         }
         MTLPrimitiveType type = primitive == 2 ? MTLPrimitiveTypeLine : MTLPrimitiveTypeTriangle;
         if (indexed) {
-            NSUInteger offset = NSUInteger(ctx->_indexOffset) + NSUInteger(start) * 2;
-            if (indexBuffer && offset + NSUInteger(count) * 2 <= indexBuffer.length) {
+            // The start index, count and index-buffer offset come from mesh records: a negative one is refused
+            // instead of wrapping the unsigned sum back inside the buffer (draw_bounds.h).
+            size_t offset = 0;
+            if (indexBuffer && IndexRange(ctx->_indexOffset, start, count, indexBuffer.length, &offset)) {
                 [enc drawIndexedPrimitives:type
                                 indexCount:count
                                  indexType:MTLIndexTypeUInt16
@@ -1661,7 +1675,7 @@ void ImageBufferData::Bind(void* context, unsigned slot) {
     // NOT RETAIL (ext.create_on_demand): the first bind of a deferred texture makes it; a made one pays the
     // nil test. The scope stamps the use and keeps an eviction away until the bind is done.
     CreateOnDemand::UseScope use(this);
-    if (!texture) CreateOnDemand::Ensure(this);
+    if (!CreateOnDemand::Made(&texture)) CreateOnDemand::Ensure(this);
     if (slot >= 31) return;
     bound.images[slot] = texture;
     bound.samplers[slot] = sampler;
@@ -1672,21 +1686,6 @@ void ImageBufferData::Bind(void* context, unsigned slot) {
         if (!pointSampler) pointSampler = MakeSampler(_owner, texture.mipmapLevelCount, true);
         if (pointSampler) bound.samplers[slot] = pointSampler;
     }
-}
-bool ImageBufferData::Update(void* data, int width, int height) {
-    CreateOnDemand::UseScope use(this);           // NOT RETAIL (ext.create_on_demand): stamp, no eviction meanwhile
-    if (!texture) CreateOnDemand::Ensure(this);   // NOT RETAIL (ext.create_on_demand)
-    if (!texture || !data || width <= 0 || height <= 0 || width > int(texture.width) ||
-        height > int(texture.height))
-        return false;
-    int f = int(_owner->_format);
-    if (f < 3 || f == 7) return false;
-    // NOT RETAIL (ext.share_gpu_data, ext.compress_ao): a shared texture is never written (D3D11 refuses its
-    // IMMUTABLE one), and a BC4 texture does not hold the R8 rows the engine would write.
-    if (shared || texture.pixelFormat == MTLPixelFormatBC4_RUnorm) return false;
-    size_t row = width * (f == 3 || f == 4 ? 1 : 4);
-    [texture replaceRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0 withBytes:data bytesPerRow:row];
-    return true;
 }
 // Holds the device lock (recursive) for a scope: see NewCommands for why every user of `commands` needs it.
 struct DeviceLockScope {
@@ -1702,9 +1701,54 @@ struct DeviceLockScope {
         }
     }
 };
+// The rows go through a staging buffer and a blit in the command stream, as D3D11's UpdateSubresource orders the
+// write between the draws around it. A CPU replaceRegion wrote the live texture while up to kFramesInFlight
+// committed frames could still be sampling it. Mid-frame the blit goes on the frame's command buffer (draws
+// encoded before it see the old rows, later ones the new); between frames on a command buffer of its own,
+// committed at once, so it runs after the frames already queued and before the next one.
+bool ImageBufferData::Update(void* data, int width, int height) {
+    CreateOnDemand::UseScope use(this);           // NOT RETAIL (ext.create_on_demand): stamp, no eviction meanwhile
+    // NOT RETAIL (ext.create_on_demand): an acquire load
+    if (!CreateOnDemand::Made(&texture)) CreateOnDemand::Ensure(this);
+    if (!texture || !data || width <= 0 || height <= 0 || width > int(texture.width) ||
+        height > int(texture.height))
+        return false;
+    int f = int(_owner->_format);
+    if (f < 3 || f == 7) return false;
+    // NOT RETAIL (ext.share_gpu_data, ext.compress_ao): a shared texture is never written (D3D11 refuses its
+    // IMMUTABLE one), and a BC4 texture does not hold the R8 rows the engine would write.
+    if (shared || texture.pixelFormat == MTLPixelFormatBC4_RUnorm) return false;
+    size_t row = width * (f == 3 || f == 4 ? 1 : 4);
+    @autoreleasepool {
+        DeviceLockScope deviceLock;   // `commands` and the encoder state, as in Read
+        auto staging = NewBuffer(row * height, "image-update");
+        if (!staging) {
+            return false;
+        }
+        memcpy(staging.contents, data, row * height);
+        EndEncoder();
+        auto cb = commands ? commands : [queue commandBuffer];
+        auto blit = [cb blitCommandEncoder];
+        [blit copyFromBuffer:staging
+                   sourceOffset:0
+              sourceBytesPerRow:row
+            sourceBytesPerImage:0
+                     sourceSize:MTLSizeMake(width, height, 1)
+                      toTexture:texture
+               destinationSlice:0
+               destinationLevel:0
+              destinationOrigin:MTLOriginMake(0, 0, 0)];
+        [blit endEncoding];
+        if (cb != commands) {
+            [cb commit];
+        }
+    }
+    return true;
+}
 bool ImageBufferData::Read(void* dst, int width, int height) {
     CreateOnDemand::UseScope use(this);           // NOT RETAIL (ext.create_on_demand): stamp, no eviction meanwhile
-    if (!texture) CreateOnDemand::Ensure(this);   // NOT RETAIL (ext.create_on_demand), before the device lock
+    // NOT RETAIL (ext.create_on_demand), before the device lock: an acquire load
+    if (!CreateOnDemand::Made(&texture)) CreateOnDemand::Ensure(this);
     // Main thread with the render thread on: the lock keeps this whole body (it ends and commits the frame's
     // current segment and starts the next one) out of the render thread's encoding.
     DeviceLockScope deviceLock;
@@ -1791,14 +1835,14 @@ static void SerializeBuffer(Data* self, IO::Serializer* serializer, bool index) 
     // NOT RETAIL (ext.create_on_demand): no eviction while this reads `buffer`, and the save arm's deferred
     // buffer is made first.
     CreateOnDemand::UseScope use(self);
-    if (!loading && !self->buffer) CreateOnDemand::Ensure(self);
+    if (!loading && !CreateOnDemand::Made(&self->buffer)) CreateOnDemand::Ensure(self);
     serializer->Serialize(owner->dynamic, nullptr);
     serializer->Serialize(owner->size, nullptr);
     if (loading && owner->size > 0) {
         // EXT SEAM (NOT RETAIL, docs/extensions/handins/CREATEONDEMAND.md): ext.create_on_demand -- a static
         // buffer read from a packed resource file is not read: its create waits for its first use, and the
         // stream skips the payload. The owner already holds the size / dynamic Create would store.
-        if (CreateOnDemand::Requested() && owner->dynamic == 0 && !self->buffer) {
+        if (CreateOnDemand::Requested() && owner->dynamic == 0 && !CreateOnDemand::Made(&self->buffer)) {
             self->cursor = 0;
             if (CreateOnDemand::DeferBuffer(self, serializer->_stream, index, uint32_t(owner->size), &self->buffer,
                                             &self->shared))
@@ -1839,7 +1883,8 @@ bool IndexBufferData::Create(uint32_t sizeBytes, uint8_t dynamic, const void* da
 }
 bool IndexBufferData::SetData(int32_t sizeBytes, int32_t offsetBytes, const void* src) {
     CreateOnDemand::UseScope use(this);          // NOT RETAIL (ext.create_on_demand): no eviction meanwhile
-    if (!buffer) CreateOnDemand::Ensure(this);   // NOT RETAIL (ext.create_on_demand)
+    // NOT RETAIL (ext.create_on_demand): an acquire load
+    if (!CreateOnDemand::Made(&buffer)) CreateOnDemand::Ensure(this);
     if (sizeBytes < 0 || offsetBytes < 0 || !buffer || size_t(offsetBytes) + sizeBytes > buffer.length ||
         (!src && sizeBytes))
         return false;
@@ -1858,7 +1903,8 @@ bool IndexBufferData::SetData(int32_t sizeBytes, int32_t offsetBytes, const void
 }
 void* IndexBufferData::Lock(int32_t sizeBytes, int32_t* outByteOffset) {
     CreateOnDemand::UseScope use(this);          // NOT RETAIL (ext.create_on_demand): no eviction meanwhile
-    if (!buffer) CreateOnDemand::Ensure(this);   // NOT RETAIL (ext.create_on_demand)
+    // NOT RETAIL (ext.create_on_demand): an acquire load
+    if (!CreateOnDemand::Made(&buffer)) CreateOnDemand::Ensure(this);
     if (!buffer || sizeBytes < 0 || size_t(sizeBytes) > buffer.length) return nullptr;
     // NOT RETAIL (ext.share_gpu_data): a shared buffer is never written; D3D11's Map fails on its
     // IMMUTABLE buffer and Lock returns null.
@@ -1884,7 +1930,8 @@ void* IndexBufferData::Lock(int32_t sizeBytes, int32_t* outByteOffset) {
 void IndexBufferData::Unlock() {}
 void IndexBufferData::Bind(void* context) {
     CreateOnDemand::UseScope use(this);          // NOT RETAIL (ext.create_on_demand): stamp, no eviction meanwhile
-    if (!buffer) CreateOnDemand::Ensure(this);   // NOT RETAIL (ext.create_on_demand): before the state lock
+    // NOT RETAIL (ext.create_on_demand): before the state lock: an acquire load
+    if (!CreateOnDemand::Made(&buffer)) CreateOnDemand::Ensure(this);
     StateGuard guard(stateMutex);
     bound.index = buffer;
 }
@@ -1920,7 +1967,8 @@ bool VertexBufferData::Create(uint32_t sizeBytes, uint8_t dynamic, const void* d
 }
 bool VertexBufferData::SetData(int32_t sizeBytes, int32_t offsetBytes, const void* src) {
     CreateOnDemand::UseScope use(this);          // NOT RETAIL (ext.create_on_demand): no eviction meanwhile
-    if (!buffer) CreateOnDemand::Ensure(this);   // NOT RETAIL (ext.create_on_demand)
+    // NOT RETAIL (ext.create_on_demand): an acquire load
+    if (!CreateOnDemand::Made(&buffer)) CreateOnDemand::Ensure(this);
     if (sizeBytes < 0 || offsetBytes < 0 || !buffer || size_t(offsetBytes) + sizeBytes > buffer.length ||
         (!src && sizeBytes))
         return false;
@@ -1939,7 +1987,8 @@ bool VertexBufferData::SetData(int32_t sizeBytes, int32_t offsetBytes, const voi
 }
 void* VertexBufferData::Lock(int32_t sizeBytes, int32_t* outByteOffset) {
     CreateOnDemand::UseScope use(this);          // NOT RETAIL (ext.create_on_demand): no eviction meanwhile
-    if (!buffer) CreateOnDemand::Ensure(this);   // NOT RETAIL (ext.create_on_demand)
+    // NOT RETAIL (ext.create_on_demand): an acquire load
+    if (!CreateOnDemand::Made(&buffer)) CreateOnDemand::Ensure(this);
     if (!buffer || sizeBytes < 0 || size_t(sizeBytes) > buffer.length) return nullptr;
     // NOT RETAIL (ext.share_gpu_data): a shared buffer is never written; D3D11's Map fails on its
     // IMMUTABLE buffer and Lock returns null.
@@ -1967,7 +2016,7 @@ void VertexBufferData::Bind(void* context, uint32_t startSlot, uint32_t offsetBy
     // NOT RETAIL (ext.create_on_demand): the first bind of a deferred buffer makes it (before the state lock);
     // a made one pays the nil test. The scope stamps the use and keeps an eviction away until the bind is done.
     CreateOnDemand::UseScope use(this);
-    if (!buffer) CreateOnDemand::Ensure(this);
+    if (!CreateOnDemand::Made(&buffer)) CreateOnDemand::Ensure(this);
     if (startSlot < 31) {
         StateGuard guard(stateMutex);
         bound.vertex[startSlot] = buffer;
@@ -2196,7 +2245,7 @@ void RenderStateData::Bind(void* context) {
     bound.fill = _owner->_fillMode ? MTLTriangleFillModeLines : MTLTriangleFillModeFill;
     // Match DX11 RenderStateData: engine bias is normalized to D24 units,
     // and slope bias is stored in 1/4096 units. Metal also takes rasterizer units.
-    bound.bias = float(int(_owner->_depth.bias * 16777215.0f));
+    bound.bias = float(Render::DepthBiasUnits(_owner->_depth.bias));
     bound.slopeBias = _owner->_depth.slopeBias * 4096.0f;
     bound.stencilReference = _owner->_stencil.reference;
 }

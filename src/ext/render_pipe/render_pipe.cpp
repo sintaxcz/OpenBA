@@ -116,10 +116,11 @@
 #include "platform/common/cpu/topology.h"    // Cpu::Get().physical
 #include "ext/eye_camera/eye_camera.h"
 #include "ext/touch_pointer/touch_pointer.h"   // ToolAimHeld: the tool flag (P11b)
-#include "ext/show_grid/show_grid.h"   // the grid, drawn under the tool (step 11)
+#include "ext/ground_draw.h"   // the ground draw (ext.map_overlays, ext.show_grid), carried to pass 2 in the packet
 #include "ext/sharp_ui/sharp_ui.h"
 #include "ext/ambient_occlusion/ambient_occlusion.h"   // AOCORE: the AO arm, recorded into the packet
 #include "options.h"
+#include "clamped_atoi.h"     // review F-087: atoi on BANISHED_* text
 #include "renderdoc_integration.h"
 #include "scene_watch.h"
 #include "stress_harness.h"   // g_verifyOn / StressHarness_Verify, the pipe draw brackets
@@ -161,7 +162,7 @@ bool ForceSnow(float* value) {
     if (s_forceSnow < 0) {
         const char* e = Opt().forceSnow;
         s_forceSnow = (e && e[0]) ? 1 : 0;
-        if (s_forceSnow) s_snowVal = static_cast<float>(std::atof(e));
+        if (s_forceSnow) s_snowVal = ClampedAtof(e);   // F-087: a double beyond float range
     }
     *value = s_snowVal;
     return s_forceSnow != 0;
@@ -293,6 +294,7 @@ void MainHalf(::Engine::MainLoop& loop, GameUpdateLoop& g, Graphics::Renderer& r
     // Step 7, pass 1 (passes.cpp), with the main-owned frame index (fix 2).
     Pass1(r, loop._context->_defaultRenderBuffer, alpha, p.frameIndex, *g.m_graphicsScene,
           g.m_playerController->camera);
+    p.shadowHeld = Graphics::SunLight::ExtTakeShadowHeld();   // ext.staggered_passes (packet.h)
     SceneWatch_DrawItemCensus(&r);   // [diag]
 
     // Step 8: SaveLoad::Draw's receiver and material.
@@ -314,6 +316,8 @@ void MainHalf(::Engine::MainLoop& loop, GameUpdateLoop& g, Graphics::Renderer& r
     p.sharpUi = Ext::Ext().sharp_ui;
     // Step 7's ext.ambient_occlusion arm (GameUpdateLoop::Draw), as a value for pass 2.
     p.aoOn = Ext::AmbientOcclusion::Enabled() && Ext::AmbientOcclusion::BuildFrame(*g.m_playerController, p.ao);
+    // Step 7's ground draw arm (GameUpdateLoop::Draw, MAPOVERLAYS), as a value for pass 2.
+    p.groundDraw = Ext::GroundDraw();
 
     StressHarness_PipeMainEnd();   // [STRESS] draw main ms
 }
@@ -413,11 +417,13 @@ struct EngineOps {
                                  (static_cast<long long>(r._frameIndex) << 32) |
                                      static_cast<long long>(static_cast<uint32_t>(ctx->_frameIndex)));
         }
-        Ext::RenderPipe::Pass2(*p.renderer, *ctx, p.aoOn ? &p.ao : nullptr);
+        Ext::RenderPipe::Pass2(*p.renderer, *ctx, p.aoOn ? &p.ao : nullptr, p.groundDraw, p.shadowHeld);
     }
     // P13_OVERLAP: when the next Frame's steps claimed the gate, wait until they are over, the
     // device lock dropped meanwhile (a step that uploads takes it: P13_OVERLAP 2.5).
-    void Gate(const Packet& p) {
+    // Not analysed (clang -Wthread-safety): it drops and re-takes the device lock BeginCommands took
+    // for this job, a hold that spans calls (and threads) the analysis cannot follow.
+    void Gate(const Packet& p) NO_THREAD_SAFETY_ANALYSIS {
         if (handoff == nullptr || !p.overlap || handoff->PassGate()) return;
         Video::Device* const device = ctx->_device;
         device->Unlock();
@@ -450,10 +456,6 @@ struct EngineOps {
         if (hasInput && Ext::Ext().touch_pointer && Ext::TouchPointer::ToolAimHeld(tool))
             hasInput = false;
         const char toolFlag = (hasInput || pauseCheck) ? 1 : 0;
-        // ext.show_grid (docs/extensions/handins/SHOWGRID.md): GameUpdateLoop::Draw's same seam, under the
-        // tool, with or without one. Row off: nothing.
-        if (Ext::Ext().show_grid && Ext::ShowGrid::Shown())
-            Ext::ShowGrid::Draw(ctx);
         if (tool != nullptr) tool->Draw(ctx, toolFlag);
     }
     void UIDraw(const Packet& p) {
@@ -502,6 +504,10 @@ struct SnapshotCounters {
     uint64_t refused = 0;
     uint64_t us      = 0;
     uint64_t bytes   = 0;
+    uint64_t copies  = 0;   // issue #253: geometries copied
+    uint64_t items   = 0;   //   draw items walked
+    uint64_t reused  = 0;   //   of which at a geometry already copied
+    uint64_t kept    = 0;   //   of which at the live object (WorldGeometry modes)
 };
 SnapshotCounters g_snapshot;
 Handoff*         g_handoff = nullptr;   // non-null: the render thread is up
@@ -552,9 +558,11 @@ struct EngineHost {
     void Freeze(Packet& next, Graphics::Renderer& r, GameUpdateLoop& g) {
         const uint64_t live = verify ? HashFrame(r, g.m_sunLight, false) : 0;
         const int64_t t0 = NowUs();
-        const SnapshotResult s = BuildSnapshot(next.slot, r, Ext::Ext().terrain_edit);
+        const SnapshotResult s = BuildSnapshot(next.slot, r, Ext::Ext().terrain_edit, verify);
         const int64_t us = NowUs() - t0;
         g_snapshot.us += static_cast<uint64_t>(us);
+        // Issue #253: the lean builder against the reference one, on the same items.
+        if (s.checked) StressHarness_Verify("RenderPipeSnapshotLean", s.mismatch == 0, static_cast<long long>(s.mismatch));
         if (!s.ok) {
             ++g_snapshot.refused;
             NoteRefusal(s.refused);
@@ -562,6 +570,10 @@ struct EngineHost {
         }
         ++g_snapshot.built;
         g_snapshot.bytes += s.bytes;
+        g_snapshot.copies += s.geometries;
+        g_snapshot.items  += s.items;
+        g_snapshot.reused += s.reused;
+        g_snapshot.kept   += s.kept;
         next.overlap = true;
         next.copyUs  = us;
         if (verify) {
@@ -720,6 +732,10 @@ void Hook(::Engine::MainLoop& loop, int32_t point, float alpha, float time) {
         g_driver.BeforeTransition(g_host);   // P13_OVERLAP: nothing in flight while the loop ends
         return;
     }
+    if (point == ::Engine::MainLoop::kExtBeforeActivate) {
+        g_driver.BeforeActivate(g_host);   // review S-002 / S-010: nothing in flight while focus changes
+        return;
+    }
     GameUpdateLoop* const g = GameUpdateLoop::_singleton;
     g_host.game   = g;
     g_host.alpha  = alpha;
@@ -761,12 +777,21 @@ void Sync() {
 bool Installed() { return g_installed; }
 bool Threaded() { return g_handoff != nullptr; }
 
+void SettleBeforeStepWrite() {
+    if (!g_installed || g_handoff == nullptr) return;
+    g_driver.SettleOverlap(g_host);   // set only between BeforeSteps and the tail: g_host.loop is set
+}
+
 Counters TakeWindow() {
     Counters c = g_driver.TakeWindow();
     c.snapshots  = g_snapshot.built;
     c.refused    = g_snapshot.refused;
     c.snapshotUs = g_snapshot.us;
     c.snapshotKB = g_snapshot.bytes / 1024;
+    c.snapshotCopies = g_snapshot.copies;
+    c.snapshotItems  = g_snapshot.items;
+    c.snapshotReused = g_snapshot.reused;
+    c.snapshotKept   = g_snapshot.kept;
     g_snapshot = SnapshotCounters{};
     return c;
 }

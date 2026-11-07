@@ -177,7 +177,8 @@ UNIT_TEST(platform_thread_create_suspended_resume_join) {
     CHECK(Platform::ThreadClose(t));
 }
 
-UNIT_TEST(platform_mutex_is_recursive_and_excludes_other_threads) {
+// Not analysed: the recursive re-take is the point, and clang's thread-safety analysis does not model it.
+UNIT_TEST(platform_mutex_is_recursive_and_excludes_other_threads) NO_THREAD_SAFETY_ANALYSIS {
     Platform::LockStorage lock;
     Platform::MutexInit(&lock, 5000);
     Platform::MutexLock(&lock);
@@ -246,6 +247,8 @@ UNIT_TEST(platform_wait_timer_sleeps) {
     Platform::PerfCounter(&b);
     CHECK((b - a) * 1000 >= freq);                          // at least ~1 ms passed
     Platform::CpuRelax();
+    Platform::WaitTimerDestroy(t);   // review 2026-11-03, F-006: LSan saw the POSIX handle leak
+    Platform::WaitTimerDestroy(nullptr);
 }
 
 namespace {

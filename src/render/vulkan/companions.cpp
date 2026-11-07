@@ -18,6 +18,7 @@
 #include "VideoVulkanData.h"
 #include "device_objects.h"
 #include "draw.h"
+#include "instance_bank.h"                         // issue #253: ConstantBufferRange
 #include "vulkan11.h"                            // ForgetImageView
 #include "seeded_create.h"                       // P4: the seeded creates (compress_ao, share_gpu_data)
 #include "async_gpu_create/async_create.h"       // P4: ext.async_gpu_create
@@ -26,6 +27,8 @@
 
 #include "ext/derived_cache/derived_cache.h"   // the SPIR-V cache's store (OpenShared)
 #include "texture_quality/texture_quality.h"   // P4: ext.texture_quality's DropFor
+#include "depth_bias.h"                        // src/render/common: the RenderState depth bias in D24 units
+#include "decal_fog/decal_fog_backend.h"           // fix.decal_fog_order: the corrected decal pixel programs
 #include "io/Serializer.h"
 #include "video/Buffers.h"
 #include "video/ConstantBuffer.h"   // ConstantBuffer::_uploadIndex
@@ -41,6 +44,7 @@
 #include <cstring>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace VideoVulkan {
 
@@ -205,7 +209,7 @@ void SerializeBuffer(Data* self, IO::Serializer* serializer, VkBufferUsageFlags 
     // waiting for its first use is made first (the save arm).
     CreateOnDemand::UseScope use(self);
     const bool loading = static_cast<int>(serializer->GetDirection()) == 0;
-    if (!loading && self->store.Buffer() == VK_NULL_HANDLE) CreateOnDemand::Ensure(self);
+    if (!loading && self->store.PublishedBuffer() == VK_NULL_HANDLE) CreateOnDemand::Ensure(self);
     auto* owner = self->_owner;
     serializer->Serialize(owner->dynamic, nullptr);
     serializer->Serialize(owner->size, nullptr);
@@ -214,7 +218,8 @@ void SerializeBuffer(Data* self, IO::Serializer* serializer, VkBufferUsageFlags 
         // EXT SEAM (NOT RETAIL, docs/extensions/handins/CREATEONDEMAND.md): ext.create_on_demand -- a static
         // buffer read from a packed resource file is not read: its create waits for its first use and the
         // stream skips the payload. The owner already holds the size / dynamic Create would store.
-        if (CreateOnDemand::Requested() && owner->dynamic == 0 && self->store.Buffer() == VK_NULL_HANDLE) {
+        if (CreateOnDemand::Requested() && owner->dynamic == 0 &&
+            self->store.PublishedBuffer() == VK_NULL_HANDLE) {
             const bool index = (usage & VK_BUFFER_USAGE_INDEX_BUFFER_BIT) != 0;
             if (CreateOnDemand::DeferBuffer(self, serializer->_stream, index, static_cast<uint32_t>(owner->size), usage,
                                             &self->store)) {
@@ -508,7 +513,7 @@ void ImageBufferData::Bind(void* context, unsigned slot) {
     // NOT RETAIL (ext.create_on_demand): the first bind of a deferred texture makes it (the draw makes
     // it again after an eviction: draw.cpp); a made one pays the null test.
     CreateOnDemand::UseScope use(this);
-    if (!image.view) CreateOnDemand::Ensure(this);
+    if (!::CreateOnDemand::LoadPublished(image.view)) CreateOnDemand::Ensure(this);
     DrawSetTexture(slot, this);
 }
 
@@ -517,7 +522,7 @@ void ImageBufferData::Bind(void* context, unsigned slot) {
 bool ImageBufferData::Update(void* data, int width, int height) {
     AsyncCreate::Await(this);                      // NOT RETAIL (ext.async_gpu_create)
     CreateOnDemand::UseScope use(this);            // NOT RETAIL (ext.create_on_demand): no eviction meanwhile
-    if (!image.view) CreateOnDemand::Ensure(this);
+    if (!::CreateOnDemand::LoadPublished(image.view)) CreateOnDemand::Ensure(this);
     // NOT RETAIL (ext.share_gpu_data, ext.compress_ao): a shared image is never written (D3D11 refuses
     // its IMMUTABLE texture), and a BC4 image does not hold the R8 rows the engine would write (the Metal
     // backend's answer).
@@ -542,7 +547,7 @@ bool ImageBufferData::Update(void* data, int width, int height) {
 bool ImageBufferData::Read(void* dst, int width, int height) {
     AsyncCreate::Await(this);                      // NOT RETAIL (ext.async_gpu_create)
     CreateOnDemand::UseScope use(this);            // NOT RETAIL (ext.create_on_demand): no eviction meanwhile
-    if (!image.view) CreateOnDemand::Ensure(this);
+    if (!::CreateOnDemand::LoadPublished(image.view)) CreateOnDemand::Ensure(this);
     Video::Device* const dev = Video::Device::_singleton;
     dev->Lock();
     const bool ok = DrawReadImage(this, dst, width, height);
@@ -580,7 +585,7 @@ void IndexBufferData::Bind(void* context) {
     (void)context;
     AsyncCreate::Await(this);   // NOT RETAIL (ext.async_gpu_create)
     CreateOnDemand::UseScope use(this);   // NOT RETAIL (ext.create_on_demand): made at its first bind
-    if (store.Buffer() == VK_NULL_HANDLE) CreateOnDemand::Ensure(this);
+    if (store.PublishedBuffer() == VK_NULL_HANDLE) CreateOnDemand::Ensure(this);
     DrawSetIndexBuffer(this);
 }
 
@@ -617,7 +622,7 @@ void VertexBufferData::Bind(void* context, uint32_t startSlot, uint32_t offsetBy
     (void)context;
     AsyncCreate::Await(this);   // NOT RETAIL (ext.async_gpu_create)
     CreateOnDemand::UseScope use(this);   // NOT RETAIL (ext.create_on_demand): made at its first bind
-    if (store.Buffer() == VK_NULL_HANDLE) CreateOnDemand::Ensure(this);
+    if (store.PublishedBuffer() == VK_NULL_HANDLE) CreateOnDemand::Ensure(this);
     DrawSetVertexStream(startSlot, this, offsetBytes, strideBytes);
 }
 
@@ -653,9 +658,9 @@ void ConstantBufferData::Bind(void* context, const void* srcData, int32_t first,
     const Video::ConstantBuffer* owner = _owner;
     int32_t bytes = owner->_registerCount << 4;
     if (owner->_banked && owner->_bankStride > 0) bytes = owner->_bankStride * (sizeBytes / owner->_bankStride);
-    if (bytes > static_cast<int32_t>(kConstantBufferRange)) {
-        LogOnce(4, "a constant buffer larger than the descriptor range is cut to it (pipelines.h kConstantBufferRange)");
-        bytes = static_cast<int32_t>(kConstantBufferRange);
+    if (bytes > static_cast<int32_t>(ConstantBufferRange())) {
+        LogOnce(4, "a constant buffer larger than the descriptor range is cut to it (instance_bank.h ConstantBufferRange)");
+        bytes = static_cast<int32_t>(ConstantBufferRange());
     }
     if (bytes < 0) bytes = 0;
     const auto* src = static_cast<const uint8_t*>(srcData);
@@ -750,7 +755,14 @@ bool CreateProgram(Data* self, Shaders::Stage stage) {
         // ext.draw_batch's particle VS rewrite make their copies from these same bytes, converted the same
         // way into a second registry entry per permutation (shader_rewrites.h, after this loop).
         const uint8_t* bytes = blob.GetData();
-        const size_t size = static_cast<size_t>(blob.GetSize());
+        size_t size = static_cast<size_t>(blob.GetSize());
+        // EXT SEAM (NOT RETAIL, docs/retail_bugs.md section 32): fix.decal_fog_order -- a decal pixel
+        // program's corrected copy (tint, then fog) is converted instead of retail's bytes when the row is on.
+        std::vector<uint8_t> fixedCopy;
+        if (stage == Shaders::Stage::Pixel && DecalFogBackend::FixedCopy(bytes, size, &fixedCopy)) {
+            bytes = fixedCopy.data();
+            size = fixedCopy.size();
+        }
         const uint64_t hash = ShaderHash(bytes, size, stage);
         ReleaseShader(self->shaders[i]);   // a second PlatformCreate replaces, it does not leak
         self->shaders[i] = AcquireShader(hash);
@@ -842,6 +854,8 @@ void VertexProgramData::Bind(void* context, int permutation) {
 
 PixelProgramData::~PixelProgramData() {
     Rewrites::PixelDestroyed(this);   // NOT RETAIL (P4)
+    ReleaseShader(rewrittenNoBloom);   // issue #253: the copy without the blossom the last Bind chose
+    rewrittenNoBloom = nullptr;
     DestroyProgram(this);
 }
 
@@ -856,8 +870,10 @@ void PixelProgramData::Bind(void* context, int permutation) {
     BindProgram(this, permutation);
     // EXT SEAM (NOT RETAIL, P4): foliage_aa's copy (shader_rewrites.h).
     ReleaseShader(rewritten);
+    ReleaseShader(rewrittenNoBloom);
     coverage = false;
-    rewritten = Rewrites::Active() ? Rewrites::BindPixel(this, boundPermutation, &coverage) : nullptr;
+    rewrittenNoBloom = nullptr;
+    rewritten = Rewrites::Active() ? Rewrites::BindPixel(this, boundPermutation, &coverage, &rewrittenNoBloom) : nullptr;
     DrawSetPixelProgram(this);
 }
 
@@ -896,7 +912,7 @@ bool RenderStateData::Create() {
     }
     s.polygonMode = Pick(kFill, rs->_fillMode, VK_POLYGON_MODE_FILL);
     s.cullMode = Pick(kCull, rs->_cullMode, VK_CULL_MODE_BACK_BIT);
-    s.depthBias = static_cast<int32_t>(rs->_depth.bias * 16777215.0f);
+    s.depthBias = Render::DepthBiasUnits(rs->_depth.bias);
     s.slopeBias = rs->_depth.slopeBias * 4096.0f;
     s.depthTest = rs->_depth.test != 0;
     s.depthWrite = rs->_depth.write != 0;

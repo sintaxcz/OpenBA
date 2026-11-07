@@ -27,6 +27,7 @@
 #include "sampler.h"
 #include <vector>
 #include "Entity/EntityList.h"
+#include "Entity/entitylist_bucket.h"   // the bucket round robin and bucket index
 #include "Entity/ComponentEntity.h"
 #include "Entity/tick_list.h"      // [PerfX WALKCACHE] the slot-8 walk, retail and cached
 #include "object/TypeInfo.h"
@@ -52,6 +53,7 @@
 #include "io/Serializer.h"   // ENDGAME B.3.4 caller batch D
 #include "io/Stream.h"      // ENDGAME B.3.4 callers batch H: IO::Stream::GetDirection
 #include "system/Value.h"   // ENDGAME B.3.4b System callers: System::Time
+#include "system/Error.h"   // NOT RETAIL (review S-007): a damaged saved list is retail's fatal error box
 #include "ui/DialogInstance.h"   // ENDGAME B.3.6 UI callers (K4)
 #include <new>
 #include <new>
@@ -820,7 +822,8 @@ template <int kWalk>
     if (prof) { Platform::PerfCounter(&pq1); g_elProfDrainTicks += pq1 - pq0; pq0 = pq1; }
 
     // Step 1: Accumulate time
-    accumulatedTime._ticks += time->_ticks;
+    // NOT RETAIL (review S-038): a wrapping add (EntityListBucket::AddTicks), as retail's ADD.
+    accumulatedTime._ticks = EntityListBucket::AddTicks(accumulatedTime._ticks, time->_ticks);
 
     // Step 2: PreUpdate — process staging arrays into update tree
     PreUpdate();
@@ -889,96 +892,80 @@ template <int kWalk>
 
     for (int bucket = 0; bucket < 5; bucket++) {
         UpdateBucket* bkt = &buckets[bucket];
-        int32_t count = bkt->_size;
-        if (count == 0) continue;
+        if (bkt->_size == 0) continue;
 
-        uint32_t toProcess = processCount[bucket];
-        uint32_t cursorVal = cursor[bucket];
-        if ((int32_t)cursorVal >= count) cursorVal = 0;
+        // The walk, the cursor clamp and the wrap: EntityListBucket::RoundRobin
+        // (Entity/entitylist_bucket.h). The bucket count is read once, as retail does.
+        auto bucketSize = [bkt] { return bkt->_size; };
+        auto tickEntry = [&](int64_t idx) {
+            // Re-read bucket data pointer each iteration (may be reallocated)
+            Object::InternalPtr<ComponentEntity>* arrBase = bkt->_data;
 
-        uint32_t startIdx = cursorVal;
-        uint32_t idx = startIdx;
-        uint32_t processed = 0;
+            // Read entity IBP and CheckPtr
+            ComponentEntity* entIBP = arrBase[idx].Get();
+            if (prof) ++g_elProfBucketVisits;
 
-        if ((int32_t)toProcess > 0) {
-            do {
-                // Re-read bucket data pointer each iteration (may be reallocated)
-                Object::InternalPtr<ComponentEntity>* arrBase = bkt->_data;
+            // Check not deleted (bit 10)
+            if (!((entIBP->_entityFlags >> 10) & 1)) {
+                // +0x20 is the entity's last-update System::Time (Serialize below
+                // writes it through Time::Serialize)
+                // NOT RETAIL (review S-038): a wrapping subtract (EntityListBucket::TicksSince),
+                // as retail's SUB; both times come from the save.
+                int64_t delta = EntityListBucket::TicksSince(currentTime, entIBP->_lastUpdateTime._ticks);
 
-                // Read entity IBP and CheckPtr
-                ComponentEntity* entIBP = arrBase[idx].Get();
-                if (prof) ++g_elProfBucketVisits;
+                if (delta > 0) {
+                    if (prof) ++g_elProfBucketTicked;
+                    ComponentEntity* ent = entIBP;
 
-                // Check not deleted (bit 10)
-                if (!((entIBP->_entityFlags >> 10) & 1)) {
-                    // +0x20 is the entity's last-update System::Time (Serialize below
-                    // writes it through Time::Serialize)
-                    int64_t delta = currentTime - entIBP->_lastUpdateTime._ticks;
+                    // Check entity has "needs bucket update" flag (bit 3)
+                    // and is not deleted (bit 10)
+                    if ((ent->_entityFlags & 0x8) != 0 &&
+                        (ent->_entityFlags & 0x400) == 0) {
 
-                    if (delta > 0) {
-                        if (prof) ++g_elProfBucketTicked;
-                        ComponentEntity* ent = entIBP;
+                        int32_t compCount = ent->_components._size;
+                        System::Time deltaTime = { delta };
 
-                        // Check entity has "needs bucket update" flag (bit 3)
-                        // and is not deleted (bit 10)
-                        if ((ent->_entityFlags & 0x8) != 0 &&
-                            (ent->_entityFlags & 0x400) == 0) {
+                        for (int64_t ci = 0; ci < compCount; ci++) {
+                            // Read component IBP and CheckPtr
+                            Component* comp = ent->_components[ci].Get();
 
-                            int32_t compCount = ent->_components._size;
-                            System::Time deltaTime = { delta };
+                            // Component flags at byte +0x20, bit 3 = "needs Update tick"
+                            // Verified from disassembly: MOV ECX,[RAX+0x20]; SHR ECX,3
+                            if ((comp->_flags >> 3) & 1) {
 
-                            for (int64_t ci = 0; ci < compCount; ci++) {
-                                // Read component IBP and CheckPtr
-                                Component* comp = ent->_components[ci].Get();
-
-                                // Component flags at byte +0x20, bit 3 = "needs Update tick"
-                                // Verified from disassembly: MOV ECX,[RAX+0x20]; SHR ECX,3
-                                if ((comp->_flags >> 3) & 1) {
-
-                                    // Component slot 9 (+0x48) Update, by name.
-                                    if (g_compProfOn) {
-                                        // [STRESS] per-component-type Update cost. Keyed by
-                                        // vtable, so the only per-call cost is two QPC reads.
-                                        const int slot = CompProf_Begin(comp);
-                                        const long long q0 = CompProf_Now();
-                                        comp->Update(&deltaTime);
-                                        CompProf_End(slot, CompProf_Now() - q0);
-                                    } else {
-                                        comp->Update(&deltaTime);
-                                    }
+                                // Component slot 9 (+0x48) Update, by name.
+                                if (g_compProfOn) {
+                                    // [STRESS] per-component-type Update cost. Keyed by
+                                    // vtable, so the only per-call cost is two QPC reads.
+                                    const int slot = CompProf_Begin(comp);
+                                    const long long q0 = CompProf_Now();
+                                    comp->Update(&deltaTime);
+                                    CompProf_End(slot, CompProf_Now() - q0);
+                                } else {
+                                    comp->Update(&deltaTime);
                                 }
-
-                                // Reload self pointer (matches original: param_1 = local_res8)
-                                // The entity list pointer is stored in GameUpdateLoop and
-                                // component updates may cause reallocation. In the original,
-                                // param_1 is reloaded from a local. We just re-read current time.
-                                currentTime = accumulatedTime._ticks;
-
-                                // Check if entity deleted during component update
-                                if (ent->_entityFlags & 0x400) break;
                             }
+
+                            // Reload self pointer (matches original: param_1 = local_res8)
+                            // The entity list pointer is stored in GameUpdateLoop and
+                            // component updates may cause reallocation. In the original,
+                            // param_1 is reloaded from a local. We just re-read current time.
+                            currentTime = accumulatedTime._ticks;
+
+                            // Check if entity deleted during component update
+                            if (ent->_entityFlags & 0x400) break;
                         }
-
-                        // Update entity timestamp
-                        entIBP->_lastUpdateTime._ticks = currentTime;
                     }
-                }
 
-                // Advance cursor with wrap-around
-                idx++;
-                processed++;
-                cursorVal++;
-                // Re-read count (array may have changed size)
-                count = bkt->_size;
-                if ((int64_t)idx >= count) {
-                    idx = 0;
-                    cursorVal = 0;
+                    // Update entity timestamp
+                    entIBP->_lastUpdateTime._ticks = currentTime;
                 }
-            } while (idx != startIdx && (int32_t)processed < (int32_t)toProcess);
-        }
+            }
+        };
 
-        // Save cursor position
-        cursor[bucket] = cursorVal;
+        // Walk, then save the cursor position
+        cursor[bucket] = EntityListBucket::RoundRobin(bucketSize, cursor[bucket], processCount[bucket],
+                                                      tickEntry);
     }
     if (prof) { Platform::PerfCounter(&pq1); g_elProfBucketTicks += pq1 - pq0; }
 
@@ -1416,12 +1403,12 @@ void EntityList::RemoveEntity(ComponentEntity** entityIBP) {
         UpdateBucket* bucket = &buckets[bucketIdx];
 
         // Last element index in bucket
-        uint32_t lastIdx = bucket->_size - 1;
+        int32_t lastIdx = bucket->_size - 1;
 
         entity = *entityIBP;
 
         // Entity's index within bucket (low 24 bits of +0x1C)
-        uint32_t entityBucketIdx = (entity->_handle << 8) >> 8;
+        int32_t entityBucketIdx = EntityListBucket::IndexOf(entity->_handle);
 
         if (lastIdx != entityBucketIdx) {
             // Swap last element into removed element's slot
@@ -1536,8 +1523,16 @@ void EntityList::FlushForSerialize(IO::Stream& stream) {
     if (static_cast<int>(stream.GetDirection()) == 1) {   // IO::Stream::GetDirection, retail 0x180006200
         int32_t removalCount = removalList._size;
         if (removalCount > 0) {
+            // NOT RETAIL: the nets of DrainRemovals. Retail drains at the end of Update
+            // (0x1400c434f), so this list is near empty when a save runs and the info
+            // dialogs hold a strong ref. The port's one-frame drain deferral leaves this
+            // frame's marks here, and freeing them without the nets leaves a pinned info
+            // panel, the EditTool selection and Graphics::Scene pointing at freed memory.
+            EntityList_CloseDialogsForDyingEntities();
+            EntityList_ClearToolSelectionForDyingEntities();
             for (int64_t i = 0; i < removalCount; i++) {
                 ComponentEntity* localIBP = removalList._data[i];
+                AuditDyingEntity(localIBP);
                 RemoveEntity(&localIBP);
             }
             // B.3.2: Collection::Array<T>::SetSize — retail 0x1400032e0, stride 8
@@ -1545,6 +1540,16 @@ void EntityList::FlushForSerialize(IO::Stream& stream) {
             removalList.SetSize(0);
         }
     }
+}
+
+// NOT RETAIL (review S-007): a saved entity list whose placements do not describe its own
+// arrays cannot be loaded: retail's own fatal error box (System::Error::SetText(.., true) +
+// Display: the box, then exit), as Map::Serialize refuses a damaged map (review F-026).
+static void RefuseDamagedEntityList() {
+    std::fprintf(stderr, "[EntityList::Serialize] FATAL: the saved entity placements are damaged\n");
+    std::fflush(stderr);
+    System::Error::SetText("This save's entity list is damaged and cannot be loaded.", true);
+    System::Error::Display();   // the box; _stopApplication then exits the process
 }
 
 void EntityList::Serialize(IO::Stream& stream) {
@@ -1577,8 +1582,10 @@ void EntityList::Serialize(IO::Stream& stream) {
             currentIBP->Object::InternalBasePtr::Serialize(serializer);   // IAT 0x140152aa0 (0x1400c4587)
 
             // After loading, verify it's a ComponentEntity
-            if (currentIBP->Get() != nullptr) {
-                bool isDerived = ::Object::IsDerivedFromNullSafe(currentIBP->Get(), ComponentEntity::TypeId());
+            // NOT RETAIL (F-143): null and type tests on the held Internal*, before any
+            // downcast to ComponentEntity*; the answer is the same.
+            if (!currentIBP->IsNull()) {
+                bool isDerived = ::Object::IsDerivedFromNullSafe(*currentIBP, ComponentEntity::TypeId());
                 if (!isDerived) {
                     *currentIBP = Object::InternalPtr<ComponentEntity>();
                 }
@@ -1601,14 +1608,23 @@ void EntityList::Serialize(IO::Stream& stream) {
     serializer.Serialize(5, cursor, nullptr);
 
     // Step 8: Per-entity metadata serialization
+    const bool loading = static_cast<int>(serializer.GetDirection()) == 0;
     int32_t entityIdx = 0;
     if (masterArray._size > 0) {
         do {
+            // NOT RETAIL (review S-007): a master slot the load left null (a null or
+            // non-ComponentEntity record, cleared by the F-143 filter above) is refused before
+            // the reads below dereference it. Retail reads through it.
+            if (loading && masterArray._data[entityIdx].IsNull()) {
+                RefuseDamagedEntityList();
+                return;
+            }
+
             // Read master array index from entity+0x18
             int32_t masterIdxField = masterArray._data[entityIdx]->_entityId;
 
             // Read bucket index (low 24 bits of entity+0x1C)
-            int32_t bucketIdxField = static_cast<int32_t>((masterArray._data[entityIdx]->_handle << 8) >> 8);
+            int32_t bucketIdxField = EntityListBucket::IndexOf(masterArray._data[entityIdx]->_handle);
 
             // Read bucket ID from entity+0x1F (the category byte of _handle)
             int32_t bucketId = (int32_t)static_cast<int8_t>(masterArray._data[entityIdx]->_handle >> 24);
@@ -1633,6 +1649,28 @@ void EntityList::Serialize(IO::Stream& stream) {
 
             entityIdx++;
         } while (entityIdx < masterArray._size);
+    }
+
+    // NOT RETAIL (review S-007): the master / bucket placements just read are the ones
+    // RemoveEntity and the bucket round robin index with, unchecked (retail stores them at
+    // 0x1400c46b9..0x1400c46dd and RemoveEntity 0x1400c38e0 writes through them). A list whose
+    // placements do not describe its own arrays is refused, as Map::Serialize refuses a
+    // damaged map (review F-026). A valid save always passes.
+    if (loading) {
+        auto master = [this](int32_t i) {
+            return masterArray._data[i].Get();
+        };
+        auto bucketSize = [this](int32_t b) {
+            return buckets[b]._size;
+        };
+        auto bucket = [this](int32_t b, int32_t i) {
+            return buckets[b]._data[i].Get();
+        };
+        if (!EntityListBucket::PlacementsConsistent<ComponentEntity>(masterArray._size, master, bucketSize,
+                                                                     bucket)) {
+            RefuseDamagedEntityList();
+            return;
+        }
     }
 
     // Step 9: the Serializer's destructor runs here

@@ -9,6 +9,9 @@
 // Contribution:
 //   ambient_occlusion/enhanced_entry.cpp   combo "Ambient occlusion" + slider "AO strength"
 //   better_trees/enhanced_entry.cpp        combo "Better trees"
+//   winter_ice/enhanced_entry.cpp          combo "Better ice" Off / On (WINTERICE; ext.winter_ice)
+//   better_clouds/enhanced_entry.cpp       combo "Better clouds" Off / On / Fancy (BETTERCLOUDS)
+//   sharp_ui/enhanced_entry.cpp            combo "Sharp UI" Off / Text / Text + icons (SHARP_SPRITES)
 //   max_shadow_res/enhanced_entry.cpp      combo "Max shadow resolution"
 //   seamless_loops/enhanced_entry.cpp      combo "Seamless ambient loops"
 //   texture_quality/enhanced_entry.cpp     combo "Texture quality" (TEXQUALITY)
@@ -63,7 +66,10 @@ struct Contribution {
 // The contributions (defined beside their extensions).
 const Contribution& AmbientOcclusionEntry();
 const Contribution& BetterTreesEntry();
+const Contribution& SharpUiEntry();      // src/ext/sharp_ui/enhanced_entry.cpp: ext.sharp_ui + ext.sharp_ui_icons
 const Contribution& BetterWaterEntry();   // src/ext/better_water/enhanced_entry.cpp: ext.better_water (BETTERWATER)
+const Contribution& WinterIceEntry();     // src/ext/winter_ice/enhanced_entry.cpp: ext.winter_ice (WINTERICE)
+const Contribution& BetterCloudsEntry();  // src/ext/better_clouds/enhanced_entry.cpp: ext.better_clouds (BETTERCLOUDS)
 const Contribution& MaxShadowResEntry();
 const Contribution& SeamlessLoopsEntry();
 const Contribution& TextureQualityEntry();   // src/ext/texture_quality/enhanced_entry.cpp (TEXQUALITY)

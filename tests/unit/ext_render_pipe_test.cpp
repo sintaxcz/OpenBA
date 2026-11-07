@@ -31,6 +31,7 @@
 #include "ext/registry.h"
 
 #include <atomic>
+#include <chrono>
 #include <random>
 #include <thread>
 #include <string>
@@ -269,6 +270,7 @@ struct FakeHost {
     std::atomic<bool> emitting{false};  // the emit up to its release (pass 2 .. PostDraw)
     std::atomic<bool> drawingUi{false}; // P13_OVERLAP: the emit past its gate, up to its release
     std::atomic<bool> passTwo{false};   // P13_OVERLAP: the emit before its gate
+    std::atomic<bool> beginning{false}; // the emit short of BeginCommands (review F-158)
     int               overlapEvery = 0; // >0: every Nth gathered packet carries a snapshot (threaded)
     int               stepsBesideEmit = 0;   // steps that ran while a pass 2 was in flight
     std::mt19937      rngOverlap{11u};
@@ -280,6 +282,11 @@ struct FakeHost {
     int               mainHalves = 0;
     int               recoveries = 0;
     int               lastModel = -1;   // the render thread's: modelIndex of the last emit kept
+    // Review F-225 / S-028: an ext seam pass 2 reads (Renderer::_extDrawItemList, the sun map's
+    // descriptor) that a step writes when a class-A toggle is applied.
+    bool              seamWrites = false;   // overlapped steps write `seam`
+    std::atomic<int>  seam{0};
+    std::atomic<int>  seamTorn{0};          // pass 2s that saw it change under them
 
     int32_t ContextFrameIndex() {
         if (emitting.load() || tailing.load()) ++errors;  // read only with nothing in flight
@@ -305,8 +312,22 @@ struct FakeHost {
         if (p.frameIndex != ctxIndex.load()) ++errors;      // fix 2: the sequential order's index
         if (p.modelIndex != p.frameIndex) ++errors;
         const int n = emits.fetch_add(1) + 1;
+        // BeginCommands: a wait for a swap-chain image, then the live device state it reads
+        // (settingsChanged, the back-buffer size). No step may run beside this part.
+        beginning.store(true);
+        for (volatile int i = 0, k = (n * 41) % 89; i < k; i = i + 1) {}
+        beginning.store(false);
+        if (release != nullptr) release->NoteBegun();
         passTwo.store(true);
+        const int seamAtPassTwo = seam.load();
         for (volatile int i = 0, k = (n * 37) % 97; i < k; i = i + 1) {}
+        if (p.overlap) {
+            // A pass 2 long enough for a claim made at BeginCommands to land before the gate
+            // (review F-158: the steps wait for BeginCommands, then the condition variable's wake).
+            const auto until = std::chrono::steady_clock::now() + std::chrono::microseconds(50);
+            while (std::chrono::steady_clock::now() < until) {}
+        }
+        if (seam.load() != seamAtPassTwo) ++seamTorn;
         passTwo.store(false);
         // packet.h's Gate: a packet with a snapshot waits here until the steps are over.
         if (p.overlap) {
@@ -355,6 +376,7 @@ struct FakeHost {
     void OverlapSwitch(const Ext::RenderPipe::OverlapGovernor&) { ++switches; }
     int publishes = 0;
     int switches  = 0;
+    int activates = 0;   // WM_ACTIVATE joins (review S-002 / S-010)
 };
 
 // One scripted run of `frames` Frames. Returns the window counters summed.
@@ -385,7 +407,16 @@ Counters RunScripted(bool threaded, int frames, int loseEvery, uint32_t seed, Fa
                 CHECK(driver.State().Pending());
                 for (int i = 0; i < 64; ++i) {
                     if (host.drawingUi.load()) ++host.errors;
+                    if (host.beginning.load()) ++host.errors;   // review F-158
                     if (host.passTwo.load()) ++host.stepsBesideEmit;
+                }
+                if (host.seamWrites) {
+                    // A class-A toggle applied from a step (review F-225, S-028).
+                    driver.SettleOverlap(host);
+                    CHECK(!driver.Overlapping());
+                    CHECK(!driver.State().Pending());
+                    CHECK(!handoff.Busy());
+                    host.seam.fetch_add(1);
                 }
             } else {
                 // The sim runs: nothing pending, no emit before its release. Threaded,
@@ -394,6 +425,18 @@ Counters RunScripted(bool threaded, int frames, int loseEvery, uint32_t seed, Fa
                 CHECK(!host.emitting.load());
                 if (!threaded || !driver.TailInFlight()) CHECK(!handoff.Busy());
                 if (host.tailing.load()) ++host.stepsInTail;
+            }
+            if (r == 5) {
+                // Review S-002 / S-010: the steps' pump dispatches a WM_ACTIVATE. Its handlers
+                // (the FSE refocus Context::Reset, DeviceData_OnActivate's swap-chain Resize)
+                // write what the emit uses: the render thread is joined first.
+                driver.BeforeActivate(host);
+                CHECK(!driver.State().Pending());
+                if (threaded) CHECK(!handoff.Busy());
+                CHECK(!driver.Overlapping());
+                CHECK(!driver.TailInFlight());
+                CHECK(host.inFlight.load() == 0);
+                ++host.activates;
             }
             if (r == 3) {
                 // A step ends the loop: MainLoop::Update joins before Shutdown / delete.
@@ -517,6 +560,7 @@ UNIT_TEST(ext_render_pipe_threaded_100k_frames_keep_the_ownership_rules) {
     // Every gathered packet was emitted (none left, none lost): emits == pipelined.
     CHECK(c.emits == c.pipelined);
     (void)host.stepsInTail;            // timing-dependent: the overlap itself is proven by the handoff test
+    CHECK(host.activates > 0);         // review S-002 / S-010: activations joined the render thread
 }
 
 // P13_OVERLAP: the gate. Unclaimed, the job goes straight through it. Claimed before the job
@@ -536,6 +580,7 @@ UNIT_TEST(ext_render_pipe_handoff_gate_holds_the_job_until_opened) {
         while (h.WaitJob()) {
             ++job;
             ++beforeGate;
+            h.NoteBegun();             // the emit's BeginCommands returned (review F-158)
             atGate.fetch_add(1);
             while (go.load() != job) std::this_thread::yield();
             if (!h.PassGate()) {
@@ -576,6 +621,43 @@ UNIT_TEST(ext_render_pipe_handoff_gate_holds_the_job_until_opened) {
     t.join();
 }
 
+// Review F-158: the steps never claim an emit still short of its BeginCommands, which reads the
+// live device state (settingsChanged, the back-buffer size) a step's message pump or options
+// apply writes. ClaimSteps waits for NoteBegun; a job done without it is not claimed.
+UNIT_TEST(ext_render_pipe_handoff_claim_waits_for_begin_commands) {
+    Handoff h;
+    std::atomic<bool> begun{false};
+    std::atomic<bool> asked{false};    // the main thread's claim returned
+    std::thread t([&] {
+        int job = 0;
+        while (h.WaitJob()) {
+            ++job;
+            std::this_thread::sleep_for(std::chrono::milliseconds(30));   // the swap-chain wait
+            if (job == 1) {
+                begun.store(true);
+                h.NoteBegun();
+                while (!asked.load()) std::this_thread::yield();   // pass 2 runs on; then the gate
+                if (!h.PassGate()) h.WaitGate();
+            }
+            h.Done();                  // job 2: done without NoteBegun
+        }
+    });
+    h.Publish();
+    const bool claimed = h.ClaimSteps();
+    asked.store(true);
+    CHECK(begun.load());               // the claim returned only after BeginCommands
+    CHECK(claimed);
+    h.OpenGate();
+    h.WaitIdle();
+    h.Publish();
+    const bool claimedUnbegun = h.ClaimSteps();
+    CHECK(!claimedUnbegun);            // done, never begun: keep the fence (nothing left to claim)
+    if (claimedUnbegun) h.OpenGate();
+    h.WaitIdle();
+    h.Stop();
+    t.join();
+}
+
 UNIT_TEST(ext_render_pipe_threaded_overlap_keeps_the_ui_half_off_the_steps) {
     FakeHost host;
     // 25k frames (100k before; the ownership rules keep their 100k above): every counter below stayed
@@ -591,6 +673,20 @@ UNIT_TEST(ext_render_pipe_threaded_overlap_keeps_the_ui_half_off_the_steps) {
     CHECK(c.emits == c.pipelined);
     CHECK(host.mainHalves == static_cast<int>(c.pipelined));
     (void)host.stepsBesideEmit;        // timing-dependent
+}
+
+// Review F-225 / S-028: a step that writes a seam pass 2 reads (SetAndRecord's class-A Syncs, the
+// sun map's descriptors) while the steps run beside an emit settles the emit first, so no pass 2
+// sees the write land under it.
+UNIT_TEST(ext_render_pipe_threaded_overlap_seam_write_settles_the_emit_first) {
+    FakeHost host;
+    host.seamWrites = true;
+    const Counters c = RunScripted(true, 20000, 0, 20261104u, host, 1);
+    CHECK(host.errors.load() == 0);
+    CHECK(c.overlapped > 0);
+    CHECK(host.seam.load() > 0);
+    CHECK(host.seamTorn.load() == 0);
+    std::printf("  seam writes %d, torn pass 2s %d\n", host.seam.load(), host.seamTorn.load());
 }
 
 UNIT_TEST(ext_render_pipe_threaded_overlap_device_lost_recovers_on_main) {

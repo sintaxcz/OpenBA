@@ -101,6 +101,7 @@
 #include "Game/GameUpdateLoop.h"   // caller batch CB6: the world's named fields
 #include "Game/Map.h"   // m_game's class (B.4 GAME-a)
 #include "Entity/CitizenBehavior.h"         // B4 GAME-a: CitizenBehavior::Serialize / PostLoad
+#include "Game/citizenlist_bounds.h"   // review S-008: the saved residence cells PostLoad files
 #include <cstdio>
 #include "collection/Collection.h"
 #include "Component/LivestockComponent.h"
@@ -209,9 +210,10 @@ void SerializeIBPArray(CitizenIbpList<T>& list, IO::Serializer* serializer, uint
     for (int32_t i = 0; i < count; ++i) {
         Object::InternalPtr<T>* elem = &arr[i];
         elem->Object::InternalBasePtr::Serialize(*serializer);   // 0x140152aa0 on the element (0x14008f7f8)
-        T* val = elem->Get();
-        if (val != nullptr) {
-            if (!::Object::IsDerivedFromNullSafe(val, typeId)) {
+        // NOT RETAIL (F-143): null and type tests on the held Internal*, before any
+        // downcast to T*; the answer is the same.
+        if (!elem->IsNull()) {
+            if (!::Object::IsDerivedFromNullSafe(*elem, typeId)) {
                 *elem = nullptr;
             }
         }
@@ -712,14 +714,12 @@ void CitizenBehavior::PostLoad() {
         int mapWidth = mapGrid->size;
         for (; idx < residenceCount; ++idx) {
             int cell = residenceCells[idx].cellA;
-            if (cell < 0 || cell >= mapWidth * mapWidth) {
-                std::fprintf(stderr, "[CitPostLoad] residence[%d] cell=%d pairHi=%d "
-                        "x=%d y=%d cellIdx=%d (max %d)\n",
-                        idx, cell, residenceCells[idx].cellB,
-                        cell % mapWidth, cell / mapWidth,
-                        (mapWidth >> 3) * ((cell / mapWidth) >> 3) + ((cell % mapWidth) >> 3),
-                        side * side);
-                std::fflush(stderr);
+            // NOT RETAIL (review S-008): a saved cell whose bucket record falls outside the
+            // grid is not filed (CitizenListBounds::IsResidenceCell); retail 0x14008f580 hands
+            // it to AddCellEntry unchecked, which then writes and frees through that record.
+            // `idx` still advances, so the later entries keep their residence index.
+            if (!CitizenListBounds::IsResidenceCell(cell, mapWidth)) {
+                continue;
             }
             AddCellEntry(cell % mapWidth, cell / mapWidth, idx);   // 0x140088a80
         }

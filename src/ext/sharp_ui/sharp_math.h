@@ -57,6 +57,11 @@ DrawChoice ChooseDraw(float uiScale, int32_t backBufferWidth, int32_t backBuffer
 
 // ---- font variants ---------------------------------------------------------
 constexpr int kVariantCoarseFrom = 40;
+// The largest base height that has variants (FontLarge is 48). A font's
+// _lineHeight comes from its file unchecked (review F-229): a larger base gets
+// none, so every function below keeps the retail font for it, and the thirds
+// arithmetic (at most 8 x base) never nears INT_MAX.
+constexpr int kMaxFontBaseHeight = 512;
 int VariantLow(int baseHeight);    // round(baseHeight * 2 / 3)
 int VariantHigh(int baseHeight);   // round(baseHeight * 4 / 3)
 int VariantStep(int baseHeight);   // 1, or 2 from kVariantCoarseFrom
@@ -92,14 +97,17 @@ int PickRetinaVariantHeight(int baseHeight, float pxPerUnit);
 // (half size, letter-spaced by the layout advances).
 bool NativePickFitsRatio(int baseHeight, float pxPerUnit);
 
-// The highest device-pixel ratio retail's slider reaches (75 %, 1 / 0.75) plus a hair.
+// The highest device-pixel ratio retail's slider reaches (75 %, 1 / 0.75) plus a hair, and the
+// lowest (150 %, 1 / 1.5) less one.
 constexpr float kRetailRatioMax = 4.0f / 3.0f + 0.01f;
+constexpr float kRetailRatioMin = 2.0f / 3.0f - 0.01f;
 
 // The font height SelectFont draws with, and whether to keep retail's scaled
 // quads instead ("retail(range)"). At `density` <= 1 (every window that is not
 // high-density: Windows, Linux, non-Retina) this is exactly PickVariantHeight,
 // i.e. upstream's selection, and keeps retail only for a ratio outside the
-// compiled range (reached only below the slider's retail 75 %, ext.phone_menu).
+// compiled range (reached only below the slider's retail 75 %, ext.phone_menu,
+// or with a render scale under Full, which multiplies _uiScale).
 // Only above 1 do the Retina variants apply.
 int PickFontHeight(int baseHeight, float pxPerUnit, float density, bool* keepRetail);
 
@@ -128,6 +136,28 @@ bool Twin2xPath(const char* path, char* out, size_t cap);
 // The twin is drawn when the UI is magnified (more than one device pixel per
 // layout unit on both axes): its texels are then closer to the screen's.
 bool WantTwin2x(float pxPerUnitX, float pxPerUnitY);
+
+// The factor of the magnified sheet copy (sharp_scaled.h) to draw `pxPerUnit`
+// device pixels per layout unit from: 0 (retail's sheet) unless WantTwin2x;
+// else the smallest of `factors` (ascending) at or above the larger axis's
+// ratio, so the copy is never magnified while a bigger one exists; the largest
+// above them all. `pxPerUnit` is already in back-buffer pixels: the slider, the
+// window density and the render scale are all in it, and nothing else counts
+// (the Windows exe is DPI-unaware, as retail: display scaling never reaches the
+// back buffer). Ties go to the smaller factor (2.0 exactly is the 2x sheet,
+// texel for pixel).
+int PickSheetFactor(float pxPerUnitX, float pxPerUnitY, const int* factors, int count);
+
+// The largest side of a magnified sheet copy: D3D11's 2D texture limit
+// (D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION). At this size one BGRA8 level is
+// 1 GiB, so every level's byte size fits the int the engine's level array takes.
+constexpr int64_t kMaxScaledSheetSide = 16384;
+
+// True when a `baseW x baseH` sheet can be copied at `factor`: both sides
+// positive and each, times `factor`, at most kMaxScaledSheetSide. A sheet's size
+// comes from its file unbounded (review F-228); past this the copy is not built
+// and retail's sheet is drawn.
+bool ScaledSheetFits(int32_t baseW, int32_t baseH, int factor);
 
 }  // namespace SharpUI
 }  // namespace Ext

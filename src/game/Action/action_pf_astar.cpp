@@ -27,6 +27,7 @@
 #include "Action/exe_bodies.h"
 #include "Action/PathSearch.h"
 #include "Action/PathAvl.h"
+#include "Action/grid_search.h"   // GRIDSEARCH: the bucket grid search Run runs
 #include "Game/PathfinderThread.h"
 #include "Game/Map.h"
 #include "Work/exe_bodies.h"          // WorkImpl_Sqrtf_132010
@@ -404,8 +405,11 @@ LAB_14001d298:
 //   cell indices into `path` (cap 0x4000), reversed (index 0 = start). Returns the
 //   path length (clamped to 0x4000). Retail's R9 (the fourth argument slot) is never
 //   read: 0x1400a6430 leaves it unset (0x1400a6558).
+// GRIDSEARCH (docs/extensions/handins/GRIDSEARCH.md): this is RETAIL'S BODY, VERBATIM,
+// over the AVL PathOpenSet, kept as RunAvl. The production Run (the name case 5 calls)
+// is below it: the same search over the bucket open set of grid_search.h.
 // ============================================================
-int GridPathSearch::Run(int start, int goal, int32_t* path) {
+int GridPathSearch::RunAvl(int start, int goal, int32_t* path) {
     PathSearchNode* lVar1;
     int iVar2;
     uint64_t uVar3;
@@ -449,6 +453,65 @@ int GridPathSearch::Run(int start, int goal, int32_t* path) {
         } while (goal != -1);
     }
     return iVar5;
+}
+
+// ============================================================
+// 0x14001ce00 — GridPathSearch::Run, FAITHFUL PERF WORK (GRIDSEARCH). The grid A* over
+// grid_search.h's bucket open set at heuristic scale 1: the same pops in the same order
+// as RunAvl above (the proof is in grid_search.cpp; unit test grid_search_test.cpp), so
+// the same path, count and return value. `search.generation` is bumped and
+// `search.sequence` / `search.open.count` are left as retail's run leaves them (the
+// PFBENCH expansion figure reads them); the node array `search.nodes` is not written:
+// nothing but RunAvl, which stamps its own generation, reads it.
+// The scratch is the searching thread's own: the pathfinder worker, or a path_workers
+// pool thread with its own grid. Inputs the bucket search does not reproduce (none in
+// retail's four movement profiles) run RunAvl instead.
+// ============================================================
+int GridPathSearch::Run(int start, int goal, int32_t* path) {
+    thread_local GridSearch::Searcher searcher;
+    GridSearch::SearchInput in;
+    in.width = width;
+    in.cellFlags = cellFlags;
+    in.stepCost = stepCost;
+    in.passableTypes = passableTypes;
+    in.allowDiagonal = allowDiagonal != 0;
+    in.manhattan = manhattan != 0;
+    in.respectBlocked = respectBlocked != 0;
+    in.start = start;
+    in.goal = goal;
+    in.heuristicScale = 1;
+    const GridSearch::SearchResult r = searcher.Run(in, path);
+    if (r.status == GridSearch::Status::Unsupported) {
+        return RunAvl(start, goal, path);
+    }
+    search.generation = search.generation + 1;
+    search.sequence = r.inserted;
+    search.open.count = r.openLeft;
+    if (g_verifyOn) {
+        VerifyRun(start, goal, r.count, path);   // NOT RETAIL: GRIDSEARCH's COMPPROF=4 shadow
+    }
+    return r.count;
+}
+
+// ============================================================
+// NOT RETAIL -- the GRIDSEARCH verification shadow (BANISHED_STRESS_COMPPROF=4,
+// g_verifyOn). Run calls it after the bucket search: rerun the same (start, goal)
+// through retail's AVL search (RunAvl, its own generation) and compare the count, every
+// path entry, `search.sequence` (relaxations) and `search.open.count` with what the
+// bucket search produced. RunAvl's stamps and tree are invisible to the next bucket
+// search (it never reads `search.nodes`; RunAvl's own entry releases the tree).
+// ============================================================
+__attribute__((noinline))
+void GridPathSearch::VerifyRun(int start, int goal, int count, const int32_t* path) {
+    const int seqFast = search.sequence;
+    const int openFast = search.open.count;
+    static thread_local int32_t ref[0x4000];
+    const int n = RunAvl(start, goal, path != nullptr ? ref : nullptr);
+    bool ok = n == count && search.sequence == seqFast && search.open.count == openFast;
+    for (int i = 0; ok && path != nullptr && i < n; ++i) {
+        ok = ref[i] == path[i];
+    }
+    StressHarness_Verify("GridSearch", ok, (static_cast<long long>(start) << 32) | static_cast<uint32_t>(goal));
 }
 
 // ============================================================
@@ -748,8 +811,11 @@ void PathfinderThread::ApplyCommand(const PathCommandArgs& cmd) {
                 lVar4 = lVar5;
             } while (lVar5 < iVar2);
         }
+        // [PFBENCH] e2e split: the publish stamp (stress harness only, NOT RETAIL), taken
+        // before the ready store so a late stamp cannot land on the slot's next request
+        // (review F-279).
+        if (g_pfProfOn) PfProf_Ready(slot);
         results.data[slot].ready = 1;
-        if (g_pfProfOn) PfProf_Ready(slot);   // [PFBENCH] e2e split: publish stamp (stress harness only)
         return;
     }
     case Ext::PathQueryFirst::kCommand:
@@ -783,10 +849,10 @@ static void EnqueueNode(PathfinderThread* self, const PathCommandArgs& cmd) {
         self->queueTail->next = node;
         node->prev = self->queueTail;
     }
-    self->queueCount = self->queueCount + 1;
+    StoreQueueCount(&self->queueCount, LoadQueueCount(&self->queueCount) + 1);   // NOT RETAIL: atomic (pathfinder_queue_count.h)
     self->queueTail = node;
     self->lock.Unlock();
-    if ((self->_runFlags & 1) == 0) {
+    if (!self->IsWorking()) {
         self->Start();
     }
 }
@@ -873,8 +939,8 @@ PathTicket* PathfinderThread::RequestPath(PathTicket* ticket, int start, int goa
     local.arg2 = goal;
     local.arg3 = iVar1;
     // [PFBENCH] stress harness only: stamp the slot's enqueue time and the depth of the
-    // queue it lands behind (an unlocked relaxed read; the count is only reported).
-    if (g_pfProfOn) PfProf_Enqueue(iVar1, __atomic_load_n(&queueCount, __ATOMIC_RELAXED));
+    // queue it lands behind (an unlocked atomic read; the count is only reported).
+    if (g_pfProfOn) PfProf_Enqueue(iVar1, LoadQueueCount(&queueCount));
     if (runInline == 0) {
         EnqueueNode(this, local);
     } else {

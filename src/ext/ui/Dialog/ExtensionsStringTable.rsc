@@ -75,6 +75,15 @@ StringTable resource
 		{ String _name = "ShowGridHueLabel";			String _text = "Hue"; }
 		{ String _name = "ShowGridSaturationLabel";		String _text = "Color"; }
 		{ String _name = "ShowGridWidthLabel";			String _text = "Width"; }
+		{ String _name = "FpsCounterTab";			String _text = "FPS"; }
+		{ String _name = "FpsCounterCurrentLabel";			String _text = "Current"; }
+		{ String _name = "FpsCounterAverageLabel";			String _text = "Average"; }
+		{ String _name = "FpsCounterMinimumLabel";			String _text = "Minimum"; }
+		{ String _name = "FpsCounterMaximumLabel";			String _text = "Maximum"; }
+		{ String _name = "FpsCounterMeasuredLabel";			String _text = "Measured for"; }
+		{ String _name = "FpsCounterValue";			String _text = "@0"; }
+		{ String _name = "FpsCounterReset";			String _text = "Reset"; }
+		{ String _name = "FpsCounterResetTip";			String _text = "Starts the count over."; }
 		{ String _name = "TerrainEditTab";				String _text = "Terrain"; }
 		{ String _name = "TerrainEditHint";				String _text = "Pick a brush, then hold the left mouse button over the map."; }
 		{ String _name = "TerrainEditHint2";			String _text = "Lower digs lakes; Flatten levels ground to build on; Mountain raises peaks."; }
@@ -163,11 +172,86 @@ StringTable resource
 
 		// fix.save_failure_notice's message box (Extensions.rsc:saveFailed): @0 the save folder
 		{ String _name = "SaveFailed";				String _text = "The game could not be saved.~n~nThe save folder could not be written:~n@0~n~nCheck that the folder is not read-only, that Windows Controlled Folder Access or an antivirus is not blocking the game, and that the disk has free space. The previous save of that name was kept."; }
+		// fix.mods_persist's in-game warning (Extensions.rsc:modsInGame): Yes opens the Mods window
+		{ String _name = "ModsInGame";				String _text = "Mods are safest to change from the main menu.~n~nChanging them during a game reloads this town with the new mods. Turning off a mod the town uses, such as one that adds buildings, resources or items, can damage the town or crash the game. Save first.~n~nOpen the Mods window anyway?"; }
 
 		{ String _name = "ExtensionTurnedOff";		String _text ="The following extension is turned off, but this save was made with it.~n~n@0 [@1]~nSaved with extension version @2~n~nA save keeps the extensions it was made with, so it will be turned on for this game. Do you still want to load the save game?"; }
 
 		// the Extensions dialog's two tabs (Extensions.rsc:tabCaptionOptional / tabCaptionDefault)
 		{ String _name = "ExtensionsTabOptional";	String _text = "Optional"; }
 		{ String _name = "ExtensionsTabDefault";		String _text = "Default"; }
+
+		// ext.building_finder's page in it (BuildingFinderPage.rsc); the rows' texts are set by the controller through FinderParam
+		{ String _name = "FinderTab";				String _text = "Find Buildings"; }
+		{ String _name = "FinderHint";			String _text = "Press a name to place it. + adds it to your favorites."; }
+		{ String _name = "FinderParam";			String _text = "@0"; }
+		{ String _name = "FinderSearch";			String _text = "Find:"; }
+		{ String _name = "FinderSearchTip";		String _text = "Type part of a name, or of the group a building is in (Housing, Farm). Every word you type must match. Click the box, type, and press Enter or click away when done."; }
+		{ String _name = "FinderClear";			String _text = "Clear"; }
+		{ String _name = "FinderClearTip";		String _text = "Empty the search box to see every building."; }
+		{ String _name = "FinderOpenFav";			String _text = "Open Favorites Window"; }
+		{ String _name = "FinderOpenFavTip";		String _text = "Open the favorites in a small window that stays beside the map while you place buildings. The hotkey button beside this one sets the key that opens or closes it on the map."; }
+		{ String _name = "FinderKeyTip";			String _text = "Change the key that opens or closes the favorites window on the map. Press this button, then the new key; Esc cancels. The key is kept in settings.cfg."; }
+		{ String _name = "FavoritesWindowTitle";	String _text = "Favorite Buildings"; }
+		{ String _name = "FavoritesOpenPage";		String _text = "Open Find Buildings"; }
+		{ String _name = "FavoritesClear";			String _text = "Clear All"; }
+		{ String _name = "FavoritesClearSure";		String _text = "Sure? Clear All"; }
+		{ String _name = "FavoritesClearTip";		String _text = "Take every building out of the favorites. Press it twice: the first press asks, the second clears the list."; }
+		{ String _name = "FavoritesOpenPageTip";	String _text = "Open the Find Buildings page of the extensions window, where you search for buildings and press + to add them here."; }
+		{ String _name = "FinderPickTip";		String _text = "Start placing this building, as the toolbar's button does. A building whose limit is reached cannot be placed."; }
+		{ String _name = "FinderStarTip";		String _text = "+ adds the building to your favorites; - takes it out. The favorites window shows them; the list is kept in building_favorites.txt, beside settings.cfg."; }
+		// ext.map_overlays: the tabs of the map window (MapOverlays.rsc)
+		{ String _name = "MapOverlaysTabMap";			String _text = "Map"; }
+		{ String _name = "MapOverlaysTabProduction";	String _text = "Made"; }
+		{ String _name = "MapOverlaysTabConsumption";	String _text = "Used"; }
+		{ String _name = "MapOverlaysTabStock";			String _text = "Stock"; }
+		{ String _name = "MapOverlaysTabServices";		String _text = "Services"; }
+		{ String _name = "MapOverlaysTabTraffic";		String _text = "Traffic"; }
+		{ String _name = "MapOverlaysTabCitizens";		String _text = "Homes"; }
+		{ String _name = "MapOverlaysTabNatural";		String _text = "Nature"; }
+		{ String _name = "MapOverlaysTabMapTip";			String _text = "The map as the game draws it, with no overlay."; }
+		{ String _name = "MapOverlaysTabProductionTip";	String _text = "Where goods were made: the items produced on each spot over the last months."; }
+		{ String _name = "MapOverlaysTabConsumptionTip";	String _text = "Where goods were used: eaten, burned, worked into other goods or built with, over the last months."; }
+		{ String _name = "MapOverlaysTabStockTip";		String _text = "Where goods are now: storage, stockpiles, markets and homes."; }
+		{ String _name = "MapOverlaysTabServicesTip";	String _text = "Where a service reaches: brighter where several buildings of the kind overlap."; }
+		{ String _name = "MapOverlaysTabTrafficTip";		String _text = "Where citizens walk: footsteps over the last months."; }
+		{ String _name = "MapOverlaysTabCitizensTip";	String _text = "How homes fare: the residents' happiness, health, food, warmth or age."; }
+		{ String _name = "MapOverlaysTabNaturalTip";		String _text = "Where the natural resources are: trees, stone, iron, wildlife and fish."; }
+		{ String _name = "MapOverlaysCategoryLabel";		String _text = "Goods"; }
+		{ String _name = "MapOverlaysResourceLabel";		String _text = "Item"; }
+		{ String _name = "MapOverlaysKindLabel";			String _text = "Show"; }
+		{ String _name = "MapOverlaysMonthsLabel";		String _text = "Months"; }
+		{ String _name = "MapOverlaysFine";				String _text = "Fine"; }
+		{ String _name = "MapOverlaysCoarse";			String _text = "Coarse"; }
+		{ String _name = "MapOverlaysLegendZero";		String _text = "0"; }
+		{ String _name = "MapOverlaysParam";				String _text = "@0"; }
+		{ String _name = "MapOverlaysTerrain";			String _text = "Show overlay on terrain"; }
+		{ String _name = "MapOverlaysTerrainTip";		String _text = "Draws the same colours on the ground."; }
+		{ String _name = "MapOverlaysAllGoods";			String _text = "All goods"; }
+		{ String _name = "MapOverlaysFood";				String _text = "Food"; }
+		{ String _name = "MapOverlaysFuel";				String _text = "Fuel"; }
+		{ String _name = "MapOverlaysOther";				String _text = "Other"; }
+		{ String _name = "MapOverlaysAllOf";				String _text = "All of them"; }
+		{ String _name = "MapOverlaysUnitItems";			String _text = "@0 items"; }
+		{ String _name = "MapOverlaysUnitSteps";			String _text = "@0 steps"; }
+		{ String _name = "MapOverlaysUnitPercent";		String _text = "@0 %"; }
+		{ String _name = "MapOverlaysUnitCount";			String _text = "@0"; }
+		{ String _name = "MapOverlaysServiceMarket";		String _text = "Market"; }
+		{ String _name = "MapOverlaysServiceWell";		String _text = "Well"; }
+		{ String _name = "MapOverlaysServiceHerbalist";	String _text = "Health"; }
+		{ String _name = "MapOverlaysServiceChapel";		String _text = "Chapel"; }
+		{ String _name = "MapOverlaysServiceSchool";		String _text = "School"; }
+		{ String _name = "MapOverlaysServiceTavern";		String _text = "Tavern"; }
+		{ String _name = "MapOverlaysServiceTownHall";	String _text = "Town Hall"; }
+		{ String _name = "MapOverlaysCitizenHappiness";	String _text = "Happiness"; }
+		{ String _name = "MapOverlaysCitizenHealth";		String _text = "Health"; }
+		{ String _name = "MapOverlaysCitizenFood";		String _text = "Food"; }
+		{ String _name = "MapOverlaysCitizenWarmth";		String _text = "Warmth"; }
+		{ String _name = "MapOverlaysCitizenAge";		String _text = "Age"; }
+		{ String _name = "MapOverlaysNaturalTrees";		String _text = "Trees"; }
+		{ String _name = "MapOverlaysNaturalStone";		String _text = "Stone"; }
+		{ String _name = "MapOverlaysNaturalIron";		String _text = "Iron"; }
+		{ String _name = "MapOverlaysNaturalWildlife";	String _text = "Wildlife"; }
+		{ String _name = "MapOverlaysNaturalFish";		String _text = "Fish"; }
 	]
 }

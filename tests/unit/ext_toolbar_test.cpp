@@ -76,8 +76,21 @@ const Ext::Toolbar::Contribution& Ext::Toolbar::TownScreenshotPage() {
     return c;
 }
 
+const Ext::Toolbar::Contribution& Ext::Toolbar::BuildingFinderPage() {
+    static const Contribution c = { "building_finder", "FinderTab",
+                                    "Dialog/BuildingFinderPage.rsc:pageBuildingFinder", StubOpen, StubChanged,
+                                    StubClose };
+    return c;
+}
+
 const Ext::Toolbar::Contribution& Ext::Toolbar::ShowGridPage() {
     static const Contribution c = { "show_grid", "ShowGridTab", "Dialog/ShowGridPage.rsc:pageShowGrid",
+                                    StubOpen, StubChanged, StubClose };
+    return c;
+}
+
+const Ext::Toolbar::Contribution& Ext::Toolbar::FpsCounterPage() {
+    static const Contribution c = { "fps_counter", "FpsCounterTab", "Dialog/FpsCounterPage.rsc:pageFpsCounter",
                                     StubOpen, StubChanged, StubClose };
     return c;
 }
@@ -103,7 +116,7 @@ UNIT_TEST(ext_toolbar_a_page_is_offered_while_its_row_is_active) {
     CHECK_EQ(Ext::Toolbar::ActivePages(none, 0), 1);
     CHECK(none[0] == nullptr);
     int n = 0;
-    CHECK(Ext::Toolbar::All(&n) != nullptr && n == 6);
+    CHECK(Ext::Toolbar::All(&n) != nullptr && n == 8);
     Ext::Install(ResolveText(""), Ext::Profile::PerEntry, false);
 }
 

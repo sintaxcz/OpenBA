@@ -159,6 +159,13 @@ static TemplateBucket* Toolbar_FindTemplateNode(const CitizenBehavior* town, con
     return nullptr;
 }
 
+// The town's count of a template: the size of its +0x160 node's entity list (0 with no node). The toolbar's
+// ShowGroup and FocusEntity buttons test it, and so does the Find Buildings page (ext.building_finder).
+int32_t Toolbar_BuiltCount(const CitizenBehavior* town, const void* tmpl) {
+    const TemplateBucket* node = Toolbar_FindTemplateNode(town, tmpl);
+    return node != nullptr ? node->element.entities._size : 0;
+}
+
 // Toolbar_FindEntity (FUN_140088d40)
 // BST search: walks the town's +0x160 tree for the template, returns its
 // index-th entity, or null.
@@ -238,11 +245,7 @@ void ToolbarDialog::UpdateButtons() {
             if (matchedComponent == nullptr || matchedComponent->_val0 < 0) {
                 enabled = true;
             } else {
-                // The town's count of the template
-                int entityCount = 0;
-                TemplateBucket* node = Toolbar_FindTemplateNode(town, typeId);
-                if (node != nullptr) entityCount = node->element.entities._size;
-                enabled = entityCount < matchedComponent->_val0;
+                enabled = Toolbar_BuiltCount(town, typeId) < matchedComponent->_val0;
             }
 
             // Set button enabled (Element slot 8)
@@ -255,12 +258,7 @@ void ToolbarDialog::UpdateButtons() {
             UI::Element* elem = buttonElements[i];
             if (!elem) continue;
 
-            // The town's count of the template
-            int entityCount = 0;
-            TemplateBucket* node = Toolbar_FindTemplateNode(town, typeId);
-            if (node != nullptr) entityCount = node->element.entities._size;
-
-            bool enabled = entityCount > 0;
+            bool enabled = Toolbar_BuiltCount(town, typeId) > 0;
             elem->Enable(enabled);
         }
     }
@@ -1261,7 +1259,7 @@ void ToolbarDialog::OnUpdateLayout() {
             UI::TextElement* textElem = isDerived ? static_cast<UI::TextElement*>(childElem) : nullptr;
 
             // Format speed string: "%ix" with gameSpeed value
-            System::String fmtStr = System::String::Format("%ix", (uint64_t)gameSpeed);
+            System::String fmtStr = System::String::Format("%ix", (int)gameSpeed);
 
             textElem->SetParameter(0, fmtStr);   // unguarded, as retail
         }
@@ -1278,12 +1276,6 @@ void ToolbarDialog::OnUpdateLayout() {
 // Event type 0x12 = button click, 0x16 = toolbar selection change.
 //
 // Original: 0x1400b92a0.
-
-// Diagnostic only: set while TutWave_StepExecute is running a step's Undo (slot 10)
-// loop. A toolbar command dispatched with this non-zero is being handled in the middle
-// of a tutorial step transition, before the next step's Apply has armed.
-extern "C" int g_TutUndoDepth;
-extern "C" int g_TutUndoIndex;
 
 void ToolbarDialog::OnElementEvent(Object::InternalPtr<UI::Element>* element, int32_t eventType, int32_t eventData, int32_t /*c*/, int32_t /*d*/, int32_t p7, void* /*userData*/) {
     // The game world and its tool manager
@@ -1676,7 +1668,7 @@ void PlayerToolManager::CenterOnEntity(UI::DialogInstance* const* dialog, Compon
     // EditTool::TypeId() (cell 0x1401c6dd8).
     EditTool* editTool = nullptr;
     if (currentTool) {
-        if (::Object::IsDerivedFromNullSafe(currentTool.Get(), EditTool::TypeId())) {
+        if (::Object::IsDerivedFromNullSafe(currentTool, EditTool::TypeId())) {
             editTool = static_cast<EditTool*>(currentTool.Get());
         }
     }
@@ -1688,7 +1680,7 @@ void PlayerToolManager::CenterOnEntity(UI::DialogInstance* const* dialog, Compon
         // Re-read current tool after mode switch
         editTool = nullptr;
         if (currentTool) {
-            if (::Object::IsDerivedFromNullSafe(currentTool.Get(), EditTool::TypeId())) {
+            if (::Object::IsDerivedFromNullSafe(currentTool, EditTool::TypeId())) {
                 editTool = static_cast<EditTool*>(currentTool.Get());
             }
         }

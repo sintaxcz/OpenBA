@@ -168,7 +168,7 @@ conflict_done:
             // placement-constructed the result over this (empty) local.
             System::String buildStr = System::Configuration::GetVersionString(versionMajor, false);
 
-            System::String formatted = System::String::Format("%i (%s)", (uint64_t)versionMinor, buildStr._data);
+            System::String formatted = System::String::Format("%i (%s)", (int)versionMinor, buildStr._data);
 
             static_cast<UI::TextElement*>(entry.textModVersion.Get())->SetParameter(0, formatted);
         }
@@ -580,11 +580,20 @@ void ModDialog::Apply() {
         if ((unsigned)(result - 1) < 2) {
             // User confirmed: save and reload
             modification->SaveList();
-            // FIX mods_persist (docs/retail_bugs.md section 23): retail writes settings.cfg only at a
-            // clean shutdown (Persistence::WriteSettings 0x1800b88e0, from Engine::Shutdown), so a
-            // crash during or after the reload loses the change. With the row on the list is written
-            // now. At the main menu SaveList has just put it in the settings; in a game (reachable only
-            // with the row off) it has not, and the write leaves the mod keys as they were.
+            // FIX mods_persist (docs/retail_bugs.md section 23), NOT RETAIL. In a game retail's
+            // SaveList only copies the list to _savedMods (Loader::Load cleared _savingSettings for
+            // the game loop), so the next main menu's RefreshList reads the old list back from the
+            // settings and remounts it: the change is undone. With the row on, the list is also put in
+            // the settings here, the same ModEnabled_ / ModIndex_ keys SaveList writes at the menu, and
+            // the next menu reads back the set this game runs with.
+            if (Ext::Fix().mods_persist && gameWorld != nullptr && modification->_savingSettings == 0) {
+                modification->_savingSettings = 1;
+                modification->SaveList();
+                modification->_savingSettings = 0;
+            }
+            // FIX mods_persist: retail writes settings.cfg only at a clean shutdown
+            // (Persistence::WriteSettings 0x1800b88e0, from Engine::Shutdown), so a crash during or
+            // after the reload loses the change. With the row on the list is written now.
             if (Ext::Fix().mods_persist) ::IO::Persistence::_singleton->WriteSettings();
             CloseAndReload();   // 0x14006e9b0
 

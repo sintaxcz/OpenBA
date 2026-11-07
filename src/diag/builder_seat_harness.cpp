@@ -36,10 +36,14 @@
 #include "Entity/ComponentEntity.h"   // B4: the component array by name
 #include "Entity/EntityList.h"        // B4: GameUpdateLoop::m_entityList
 #include "options.h"
+#include "clamped_atoi.h"     // review F-087: checked parse of BANISHED_* text
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+
+// workplacecomponent.cpp: the roster-only mode of WorkPlaceComponent::Attach / Detach.
+extern bool g_wpcRosterOnly;
 
 namespace {
 
@@ -52,11 +56,11 @@ void Init() {
     s_want = -1;
     const char* e = Opt().builders;
     if (!e || !e[0]) return;
-    int n = std::atoi(e);
+    int n = HarnessAtoi(e);
     if (n <= 0) return;
     s_want = n;
     if (const char* comma = std::strchr(e, ',')) {
-        int f = std::atoi(comma + 1);
+        int f = HarnessAtoi(comma + 1);
         if (f > 0) s_settle = f;
     }
 }
@@ -95,8 +99,14 @@ extern "C" void BuilderSeat_Tick(int frameNum) {
     const uint64_t builderKey = reinterpret_cast<uintptr_t>(builder);   // the log line prints the pointer as an integer (%016llx)  // CAST-OK: ptr_int
     const int before = CountProfession(townMgr, builder);
 
+    // The roster-only hold this harness was measured with (it lived inside AddWorker until
+    // review F-088 moved it here, out of the retail body): the workplace Attach / Detach
+    // skip the status-icon and model toggles while the seats are pressed.
+    const bool prevRosterOnly = g_wpcRosterOnly;
+    g_wpcRosterOnly = true;
     for (int i = 0; i < s_want; ++i)
         townMgr->AddWorker(builder);
+    g_wpcRosterOnly = prevRosterOnly;
 
     const int after = CountProfession(townMgr, builder);
 

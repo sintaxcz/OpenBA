@@ -115,7 +115,10 @@
 #include "async_gpu_create/async_create.h"   // NOT RETAIL: ext.async_gpu_create
 #include "share_gpu_data/share_create.h"     // NOT RETAIL: ext.share_gpu_data
 #include "create_on_demand/lazy_create.h"    // NOT RETAIL: ext.create_on_demand
+#include "ext/fullscreen_mode/fullscreen_mode.h"   // NOT RETAIL: ext.fullscreen_mode's borderless fullscreen
 #include "VideoDX11Data.h"
+#include "d3d_debug.h"                       // NOT RETAIL: BANISHED_D3D_DEBUG
+#include "options.h"
 
 #include <windows.h>
 #include <d3d11.h>
@@ -131,6 +134,7 @@
 // ENDGAME B.3.5 block D2 / B35_FILEMAP §3f: the real `Video::Device` and its four
 // nested value types, replacing this file's four local name-and-layout mirrors.
 #include "video/Device.h"
+#include "video/refresh_rate_at.h"   // Video::RefreshRateAt (review F-171)
 // B5 DEV-A: the `Video::DeviceData` base `VideoDX11::DeviceData` derives from.
 #include "video/CompanionData.h"
 #include "application/Application.h"   // -Iruntime/types: ENDGAME B.3.7 callers (K5)
@@ -447,10 +451,10 @@ void FillSwapChainDesc(DeviceData* self, DXGI_SWAP_CHAIN_DESC* desc) {
 
     // ENDGAME B.3.5: `mode` is the real `Video::Device::DisplayMode` now, so its
     // refresh array is already typed and the cast is gone.
-    const RefreshRate* rates = mode.refreshData;
-    const int rateIndex = dev->refreshRateIndex;
-    desc->BufferDesc.RefreshRate.Numerator   = static_cast<UINT>(rates[rateIndex].numerator);
-    desc->BufferDesc.RefreshRate.Denominator = static_cast<UINT>(rates[rateIndex].denominator);
+    // Review F-171: RefreshRateAt bounds the index to this mode's list (refresh_rate_at.h).
+    const RefreshRate rate = Video::RefreshRateAt(mode, dev->refreshRateIndex);
+    desc->BufferDesc.RefreshRate.Numerator   = static_cast<UINT>(rate.numerator);
+    desc->BufferDesc.RefreshRate.Denominator = static_cast<UINT>(rate.denominator);
 
     desc->BufferDesc.Format           = DXGI_FORMAT_B8G8R8A8_UNORM;   // 0x57
     desc->BufferDesc.ScanlineOrdering = DXGI_MODE_SCANLINE_ORDER_UNSPECIFIED;
@@ -463,6 +467,9 @@ void FillSwapChainDesc(DeviceData* self, DXGI_SWAP_CHAIN_DESC* desc) {
     desc->BufferCount  = 2;
     desc->OutputWindow = WindowOf(dev);
     desc->Windowed     = (cfg->fullscreen == 0) ? TRUE : FALSE;
+    // EXT SEAM (NOT RETAIL, src/ext/fullscreen_mode/fullscreen_mode.h): borderless is a windowed swap chain
+    // in the fullscreen popup AdjustDisplay makes.
+    if (Ext::FullscreenMode::Borderless()) desc->Windowed = TRUE;
     desc->SwapEffect   = DXGI_SWAP_EFFECT_DISCARD;
     desc->Flags        = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;      // 2
 
@@ -715,6 +722,7 @@ void TraceContainingOutput(IDXGISwapChain* sc) {
 // in the shipped code (`MOV dword ptr [RSP+0x60],0x1c` at 0x18000441d) and is
 // reproduced verbatim — see the quirks list.
 // ============================================================
+
 int DeviceData_Resize(DeviceData* self) {
     ::Video::Device* dev = self->_owner;
     ++g_resizeTraceCalls;
@@ -730,13 +738,24 @@ int DeviceData_Resize(DeviceData* self) {
     if (!Platform::Window::IsVisible(dev->windowHandle) && !BootWindow::IsPending())
         return 0;
 
-    // A minimized window has a 0x0 client rect, and IsWindowVisible() is still
-    // TRUE for it — so retail cheerfully latches that 0x0 the first time the
-    // player minimizes. Treat it like the not-visible case: leave
-    // kResetPending set and rebuild when the window comes back. Doing this
-    // before the guard below also stops us fighting a deliberate minimize.
-    if (Platform::Window::IsIconic(dev->windowHandle))
+    // NOT RETAIL: a minimized window has a 0x0 client rect, and IsWindowVisible()
+    // is still TRUE for it — so retail (0x180004340 tests IsWindowVisible only)
+    // cheerfully latches that 0x0 the first time the player minimizes. Treat it
+    // like the not-visible case: leave kResetPending set and rebuild when the
+    // window comes back. Doing this before the guard below also stops us fighting
+    // a deliberate minimize.
+    if (Platform::Window::IsIconic(dev->windowHandle)) {
+        // Review S-052: retail's reset ends in SetFullscreenState(cfg->fullscreen)
+        // (0x1800044af), which is how a focus loss (OnActivate: cfg->fullscreen = 0)
+        // leaves exclusive mode. The rebuild waits for the restore; leaving exclusive
+        // mode does not. The restore's reset sets it again from cfg->fullscreen.
+        BOOL exclusive = FALSE;
+        IDXGISwapChain* const sc = self->swapChain;
+        if (ConfigOf()->fullscreen == 0 && sc != nullptr &&
+            sc->GetFullscreenState(&exclusive, nullptr) == 0 && exclusive)
+            sc->SetFullscreenState(FALSE, nullptr);
         return 0;
+    }
 
     ID3D11DeviceContext* ctx = self->d3dContext;
     ctx->OMSetRenderTargets(0, nullptr, nullptr);
@@ -765,9 +784,23 @@ int DeviceData_Resize(DeviceData* self) {
     ::new (static_cast<void*>(&mode))
         DisplayMode(dev->GetDisplayMode(dev->displayModeIndex));
 
+    // EXT SEAM (NOT RETAIL, src/ext/fullscreen_mode/fullscreen_mode.h): borderless leaves an exclusive
+    // swap chain BEFORE AdjustDisplay places the popup (leaving exclusive mode restores the desktop's
+    // mode and the window DXGI took over; retail's SetFullscreenState below comes after the resize), and
+    // takes the monitor's size, not the display mode's: the desktop is never switched.
+    const bool borderless = Ext::FullscreenMode::Borderless();
+    if (borderless) {
+        BOOL exclusive = FALSE;
+        if (self->swapChain != nullptr &&
+            self->swapChain->GetFullscreenState(&exclusive, nullptr) == 0 && exclusive)
+            self->swapChain->SetFullscreenState(FALSE, nullptr);
+    }
+
     if (cfg->fullscreen != 0 && self->wasFullscreen == 0) {
         dev->backBufferWidth  = mode.width;
         dev->backBufferHeight = mode.height;
+        if (borderless)
+            Ext::FullscreenMode::DesktopSize(dev->monitor, &dev->backBufferWidth, &dev->backBufferHeight);
     }
 
     // AdjustDisplay's windowed branch re-reads GetClientRect and writes the
@@ -829,14 +862,14 @@ int DeviceData_Resize(DeviceData* self) {
     RememberGoodSize(dev->backBufferWidth,
                      dev->backBufferHeight);
 
-    const RefreshRate* rates = mode.refreshData;   // ENDGAME B.3.5: typed, no cast
-    const int rateIndex = dev->refreshRateIndex;
+    // Review F-171: RefreshRateAt bounds the index to this mode's list (refresh_rate_at.h).
+    const RefreshRate rate = Video::RefreshRateAt(mode, dev->refreshRateIndex);
 
     DXGI_MODE_DESC target;
     target.Width                   = static_cast<UINT>(dev->backBufferWidth);
     target.Height                  = static_cast<UINT>(dev->backBufferHeight);
-    target.RefreshRate.Numerator   = static_cast<UINT>(rates[rateIndex].numerator);
-    target.RefreshRate.Denominator = static_cast<UINT>(rates[rateIndex].denominator);
+    target.RefreshRate.Numerator   = static_cast<UINT>(rate.numerator);
+    target.RefreshRate.Denominator = static_cast<UINT>(rate.denominator);
     target.Format                  = static_cast<DXGI_FORMAT>(28);  // sic — see quirks
     target.ScanlineOrdering        = DXGI_MODE_SCANLINE_ORDER_UNSPECIFIED;
     target.Scaling                 = DXGI_MODE_SCALING_UNSPECIFIED;
@@ -866,7 +899,7 @@ int DeviceData_Resize(DeviceData* self) {
                           static_cast<UINT>(dev->backBufferHeight),
                           DXGI_FORMAT_B8G8R8A8_UNORM,
                           DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH) == 0 &&
-        sc->SetFullscreenState(cfg->fullscreen != 0 ? TRUE : FALSE,
+        sc->SetFullscreenState(cfg->fullscreen != 0 && !borderless ? TRUE : FALSE,
                                nullptr) == 0 &&
         CreateColorBuffer(self) &&
         CreateDepthBuffer(self)) {
@@ -918,6 +951,11 @@ int DeviceData_OnActivate(void* /*hwnd*/, uint32_t /*msg*/,
     DeviceData* dd = Dx11DeviceData();
 
     if (cfg->fullscreen == 0 && dd->wasFullscreen == 0)
+        return 1;
+
+    // EXT SEAM (NOT RETAIL, src/ext/fullscreen_mode/fullscreen_mode.h): a borderless window has no
+    // exclusive mode to lose; it stays as it is when another window takes the focus.
+    if (dd->wasFullscreen == 0 && Ext::FullscreenMode::Borderless())
         return 1;
 
     if (static_cast<unsigned short>(wParam) == 0) {      // WA_INACTIVE
@@ -1212,6 +1250,16 @@ bool DeviceData::CreateDevice() {
     output->GetDesc(&od);
     dev->monitor = od.Monitor;
 
+    // EXT SEAM (NOT RETAIL, src/ext/fullscreen_mode/fullscreen_mode.h): a borderless boot covers the output's
+    // desktop rect, whatever display mode step 4 picked.
+    if (Ext::FullscreenMode::Borderless()) {
+        const RECT& dr = od.DesktopCoordinates;
+        if (dr.right > dr.left && dr.bottom > dr.top) {
+            dev->backBufferWidth  = dr.right - dr.left;
+            dev->backBufferHeight = dr.bottom - dr.top;
+        }
+    }
+
     // 8 — settle the window, which may rewrite Device+0x04/+0x08.
     dev->AdjustDisplay();
     StallDebug::Mark("  DX11 AdjustDisplay (window sized)");
@@ -1227,7 +1275,16 @@ bool DeviceData::CreateDevice() {
         D3D_FEATURE_LEVEL_10_0,   // 0xa000
     };
     D3D_FEATURE_LEVEL granted = static_cast<D3D_FEATURE_LEVEL>(0);
-    if (createDevice(adapter, static_cast<D3D_DRIVER_TYPE>(0), nullptr, 0,
+    // NOT RETAIL: BANISHED_D3D_DEBUG asks for the debug layer (retail passes 0); without the
+    // SDK layers installed that create fails, and the retail call below runs as before.
+    bool created = false;
+    if (Opt().d3dDebug) {
+        created = createDevice(adapter, static_cast<D3D_DRIVER_TYPE>(0), nullptr, D3D11_CREATE_DEVICE_DEBUG,
+                               levels, 3, D3D11_SDK_VERSION, &d3dDevice, &granted, &d3dContext) == 0;
+        D3dDebug::Attach(created ? d3dDevice : nullptr);
+    }
+    if (!created &&
+        createDevice(adapter, static_cast<D3D_DRIVER_TYPE>(0), nullptr, 0,
                      levels, 3, D3D11_SDK_VERSION,
                      &d3dDevice, &granted, &d3dContext) != 0) {
         System::Error::SetText("VideoDX11: Could not initialize the DX11 device! "
@@ -1289,7 +1346,11 @@ bool DeviceData::CreateDevice() {
             "VideoDX11: Failed to create a valid depth buffer format "
             "DXGI_FORMAT_D24_UNORM_S8_UINT [%ix%i %AA]!",
             dev->backBufferWidth,
-            dev->backBufferHeight, aa);
+            dev->backBufferHeight,
+            // NOT RETAIL (UB, vararg type): retail's text has `%A` (a hex double) where the
+            // colour-buffer message has `%ixAA`, and passes the int; the int is passed as the
+            // double `%A` reads. The format text is retail's.
+            static_cast<double>(aa));
         System::Error::SetText(msg._data, false);
         return false;
     }
@@ -1432,9 +1493,14 @@ void GfxInterfaceArraySetLength(::Video::Device* dev, int newCount,
 
     GraphicsInterface* base = *dataP;
     int i = (oldBase == base) ? oldCount : 0;
+    // NOT RETAIL (UB, null-pointer arithmetic): retail forms `base + i` and then tests it for
+    // null (MSVC's placement-new check); with a failed MemAlloc that is null + i, which is
+    // undefined and lets the compiler drop the test. The test is made once, on `base`: the same
+    // answer for every element.
+    if (base == nullptr)
+        i = newCount;
     for (; i < newCount; ++i) {
         GraphicsInterface* dst = base + i;
-        if (!dst) continue;
         const GraphicsInterface* src = (i < oldCount) ? (oldBase + i) : proto;
         ::new (static_cast<void*>(dst)) GraphicsInterface(*src);   // 0x18000ce10
     }
@@ -1475,9 +1541,12 @@ void AdapterArraySetLength(GraphicsInterface* gi, int newCount,
 
     Adapter* base = gi->adapterData;
     int i = (oldBase == base) ? oldCount : 0;
+    // NOT RETAIL (UB, null-pointer arithmetic): as GfxInterfaceArraySetLength, the per-element
+    // null test on `base + i` is made once on `base`.
+    if (base == nullptr)
+        i = newCount;
     for (; i < newCount; ++i) {
         Adapter* dst = base + i;
-        if (!dst) continue;
         const Adapter* src = (i < oldCount) ? (oldBase + i) : proto;
         ::new (static_cast<void*>(dst)) Adapter(*src);   // 0x18000cc70
     }
@@ -1692,8 +1761,12 @@ static bool EnumerateDxgiInterfaceInto(::Video::Device* dev, const char* interfa
                     modes = static_cast<DXGI_MODE_DESC*>(
                         System::MemoryAllocator::MemAlloc(static_cast<size_t>(modeCount) * sizeof(DXGI_MODE_DESC), 4));
 
+                // NOT RETAIL (UB, null dereference): with a first count of 0 `modes` stays
+                // null, the second call is then a count query, and a mode list that grew in
+                // between (hot-plug, a mode change) returns n > 0 with S_OK; retail then reads
+                // modes[0] through null. The loop runs only over a buffer; the call is as retail.
                 if (output->GetDisplayModeList(static_cast<DXGI_FORMAT>(28), 0,
-                                               &modeCount, modes) == 0) {
+                                               &modeCount, modes) == 0 && modes != nullptr) {
                     for (UINT i = 0; i < modeCount; ++i) {
                         const DXGI_MODE_DESC& m = modes[i];
                         if (m.Width < 800) continue;

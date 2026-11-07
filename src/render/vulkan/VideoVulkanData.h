@@ -20,6 +20,7 @@
 #include "resources.h"
 #include "shader_convert.h"
 #include "video/CompanionData.h"
+#include "create_on_demand/lazy_table.h"   // LoadPublished: ext.create_on_demand's published handles
 
 #include <cstdint>
 #include <vector>
@@ -80,6 +81,10 @@ public:
     bool BeginInstancedIndexedVertices(int vertexCount, int vertexStride, int indexCount,
                                        int instanceCount) override;
     void EndInstancedIndexedVertices(int primitiveType) override;
+    // Issue #253 (instance_bank.h): the whole transform bank of a batch wider than the Context's 52
+    // slots, kVulkanInstanceCap matrices once the first wide slot is written. Slots 52.. are written by
+    // InstanceBank::SetWide; BindTransforms copies the Context's 0..51 in front before the upload.
+    std::vector<uint8_t> wideBank;
 };
 
 class ImageBufferData final : public Video::ImageBufferData {
@@ -132,6 +137,11 @@ struct BufferStore {
     bool shared = false;
     VkBuffer Buffer() const {
         return dynamic ? (current >= 0 ? versions[current].buffer.buffer : VK_NULL_HANDLE) : gpu.buffer;
+    }
+    // ext.create_on_demand: Buffer() with the static handle read by an acquire load, for the tests
+    // a prefetch worker's Publish may race (create_on_demand/lazy_table.h LoadPublished).
+    VkBuffer PublishedBuffer() const {
+        return dynamic ? Buffer() : ::CreateOnDemand::LoadPublished(gpu.buffer);
     }
 };
 
@@ -232,6 +242,9 @@ public:
     // needs the A2C clone of a non-blending state (draw.cpp).
     ShaderEntry* rewritten = nullptr;
     bool coverage = false;
+    // Issue #253: `rewritten` made without natural growth's blossom (one reference held), or null; the draw
+    // uses it while Rewrites::DrawBloom() is false.
+    ShaderEntry* rewrittenNoBloom = nullptr;
 };
 
 class RenderStateData final : public Video::RenderStateData {

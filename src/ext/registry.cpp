@@ -194,13 +194,14 @@ const Entry kEntries[] = {
     // MODSPERSIST (docs/retail_bugs.md section 23): retail writes the mod list to settings.cfg only at a
     // clean shutdown, so a crash after a Mods change (often the reload itself) loses it; and a change made
     // in a game is used for that game, then dropped at the next menu after every changed resource was
-    // reloaded twice. With the row on, confirming Mods writes the settings at once, and the pause menu's
-    // Mods button is greyed out (retail's own Enable(false), as for a game with flag bit 10). Not
-    // sim-visible. Nothing new is saved.
+    // reloaded twice. With the row on, confirming Mods writes the settings at once; in a game the pause
+    // menu's Mods button first shows a Yes / No warning (Dialog/Extensions.rsc:modsInGame), and a confirmed
+    // change is put in the settings too, so the next menu keeps it. Not sim-visible. Nothing new is saved.
     { "mods_persist", Tier::Fix, Class::None, true,
-      "Mod changes saved, from the main menu",
+      "Mod changes saved at once",
       "A change in the Mods window is saved as soon as you confirm it, so a crash no longer brings back "
-      "the old list; mods are changed from the main menu only (the in-game Mods button is greyed out).",
+      "the old list, and a change made during a game is kept after it. In a game the Mods button warns "
+      "first: turning off a mod the town uses can damage it.",
       0, [](State& s) -> bool& { return s.fix.mods_persist; } },
     // SAVEFAILURENOTICE (docs/retail_bugs.md section 27): a save that does not reach the disk (read-only
     // folder, Controlled Folder Access, antivirus, full disk) opens a message box naming the save folder,
@@ -267,6 +268,58 @@ const Entry kEntries[] = {
       "room for, instead of hauling a full load to a nearly full building and carrying it back again.",
       0, [](State& s) -> bool& { return s.fix.input_fetch_room; } },
 
+    // DEBUGSPAWNORIGIN (docs/retail_bugs.md section 29): the debug panel's "spawn citizens" button
+    // (Game_SpawnCitizens 0x140060380) places its four citizens on the use nodes of the town's storage
+    // buildings and repeats its pass until four are placed; a town whose storages have no use node (only
+    // stockpiles) loops for ever and the game hangs. With the row on, a pass that places nobody places the
+    // rest at the free land cell nearest the world origin (the map centre). Debug panel only; nothing new
+    // is saved (the citizens are ordinary citizens).
+    { "debug_spawn_origin", Tier::Fix, Class::None, true,
+      "Debug spawn does not hang",
+      "The debug panel's spawn-citizens button no longer freezes the game in a town whose storage has no "
+      "place to put them (only stockpiles); the new citizens appear near the middle of the map instead.",
+      0, [](State& s) -> bool& { return s.fix.debug_spawn_origin; } },
+
+    // STATUSBAREMPTYTOWN (review S-006): the status bar's problem-icon click (StatusBarUI's handler
+    // 0x14007a120) walks the town's citizens with no count test. A click queued in one frame is
+    // dispatched in the next, after its sim tick; when that tick removed the last citizen, the walk
+    // reads the list's slot 0 past its end: the removed citizen (freed in retail by the same frame's
+    // entity drain). With the row on, the click does nothing in a town with no citizen. UI only;
+    // nothing new is saved.
+    { "statusbar_empty_town", Tier::Fix, Class::None, true,
+      "Status icons safe when the town empties",
+      "Clicking a status-bar problem icon just as the last citizen leaves or dies no longer jumps to "
+      "the citizen who is gone (in the original game, a read of freed memory).",
+      0, [](State& s) -> bool& { return s.fix.statusbar_empty_town; } },
+    // MINIMAPOUTLINECLIP (docs/retail_bugs.md section 31): FrustumOutlineElement::Draw clips each side of the
+    // minimap's camera outline to the minimap rect before AddLine, so the sprite cull (which reads a line's
+    // endpoints as a rectangle's corners) no longer drops a side drawn toward a corner off the map. UI only.
+    { "minimap_outline_clip", Tier::Fix, Class::None, true,
+      "Whole camera outline on the map",
+      "The yellow outline of the camera's view on the map keeps all four sides when part of the view lies "
+      "past the edge of the map, instead of losing one or two.",
+      0, [](State& s) -> bool& { return s.fix.minimap_outline_clip; } },
+    // STREAMFREEWAIT (review S-027): Audio::Device::OnSoundBufferDeleted (0x1800de0e0) frees a streamed
+    // buffer's voice and returns, and ~SoundBuffer frees the seek table the stream worker may still be
+    // reading between its ReadFile and its next lock (Stream::Run 0x1800a0f60): a use after free. With
+    // the row on, the stream's pass over that channel is stopped and waited for first, Stream::Play's
+    // own drain. Engine seam Audio::Device::_extFixStreamFreeWait. Nothing in the sim; nothing saved.
+    { "stream_free_wait", Tier::Fix, Class::None, true,
+      "No crash when streamed music is unloaded",
+      "When a streamed sound such as music is unloaded while it plays, the game first lets the music "
+      "streaming thread stop, so that thread never reads the freed sound.",
+      0, [](State& s) -> bool& { return s.fix.stream_free_wait; } },
+    // DECALFOGORDER (docs/retail_bugs.md section 32): the terrain decal pixel programs (Decal.ps and its
+    // heirs) fog the decal colour, then tint it toward the underwater colour, so a decal below the water
+    // line (a bridge's, a dock's) shows as a dark band through fog. With the row on, the installed
+    // programs are rewritten at load to tint first, then fog, as the model programs do
+    // (src/render/common/decal_fog/; never a shipped copy, DESIGN.md rule 7). Render only; nothing saved.
+    { "decal_fog_order", Tier::Fix, Class::None, true,
+      "Bridges fade into fog",
+      "The dark ground marking under a bridge or dock over water fades into fog like everything else, "
+      "instead of showing as a sharp dark band through it. Takes effect at the next start.",
+      0, [](State& s) -> bool& { return s.fix.decal_fog_order; } },
+
     // Extensions. Each one adds a field to Ext::Extensions and a row here:
     // Tier::Extension, its Class, default true for class A / false for B or C, and for class B or C its
     // formatVersion (>= 1). The id is [a-z0-9_]+ (the unit tests check every row).
@@ -297,7 +350,8 @@ const Entry kEntries[] = {
 
     { "sharp_ui", Tier::Extension, Class::A, true,
       "Sharp UI",
-      "Crisp text and sprites at any UI scale. Layout is unchanged.",
+      "Crisp text at any UI scale; with icons (the Enhanced tab's Sharp UI), crisp menu sprites too. "
+      "Layout is unchanged.",
       0, [](State& s) -> bool& { return s.ext.sharp_ui; } },
 
     { "fast_paths", Tier::Extension, Class::B, false,
@@ -389,6 +443,33 @@ const Entry kEntries[] = {
       "Better trees",
       "Smooth leaf edges (MSAA), tree shading that no longer turns with the view, leaf-scale shadow dapple.",
       0, [](State& s) -> bool& { return s.ext.better_trees; } },
+    // BOATLANE (docs/extensions/handins/BOATLANE.md): the trade boats sail a lane through the middle of the
+    // water, a smooth curve, instead of retail's grid steps along the cheapest bank; the same lane
+    // ext.winter_ice keeps open in the ice. Class B: a boat's route and so its travel time change. OFF by
+    // default, the B / C rule (the user's ruling, 2026-11-06; extension defaults to be revisited next
+    // release).
+    { "boat_lane", Tier::Extension, Class::B, false,
+      "Boat lane",
+      "Trade boats sail a smooth lane down the middle of rivers and lakes instead of hugging the cheapest "
+      "bank in grid steps.",
+      1, [](State& s) -> bool& { return s.ext.boat_lane; } },
+    // WINTERICE (docs/extensions/handins/WINTERICE.md): water freezes in winter -- ice from the banks inward
+    // while it is below 32 F, the shallow sides thawing first in spring, open water round buildings in the
+    // water and along the trade boats' channel. Drawn as one more pass over each water range with our own
+    // pixel program. Class A: drawing only, nothing saved; ON by default (the standing class A rule).
+    { "winter_ice", Tier::Extension, Class::A, true,
+      "Winter ice",
+      "Lakes and rivers freeze over in cold winters: ice grows from the banks inward and melts from the "
+      "sides in spring. The trade boats' channel stays open.",
+      0, [](State& s) -> bool& { return s.ext.winter_ice; } },
+    // BETTERCLOUDS (docs/extensions/handins/BETTERCLOUDS.md): the sky draws with a pixel program of ours,
+    // procedural clouds drifting down the wind over the painted sky blurred; the mode below adds Fancy.
+    // Class A: drawing only, nothing saved, live; ON by default (the standing class A rule).
+    { "better_clouds", Tier::Extension, Class::A, true,
+      "Better clouds",
+      "Clouds drift across the sky and its reflection in the water with the wind, thicker and darker "
+      "in winter and in bad weather. They stop when the game is paused.",
+      0, [](State& s) -> bool& { return s.ext.better_clouds; } },
     // FAA-SHADOW (docs/extensions/FOLIAGE_AA.md section 7): the sun map at 4096 when the retail
     // Shadow Resolution combo is at High; Medium / Low keep their retail sizes.
     { "max_shadow_res", Tier::Extension, Class::A, true,
@@ -439,6 +520,15 @@ const Entry kEntries[] = {
       "Records who is born to whom, who marries and who dies, and shows each citizen's family on the Family "
       "page in a game. The record is kept in the save.",
       2, [](State& s) -> bool& { return s.ext.family_tree; } },
+    // MAPOVERLAYS (docs/extensions/handins/MAPOVERLAYS.md): SimCity-style data views beside the map window's
+    // map (production, consumption, stock, services, traffic, citizens, natural resources). Class C: the last
+    // year's production, consumption and traffic history is the town's own state, kept in the save's tail
+    // (src/ext/map_overlays/save_state.cpp).
+    { "map_overlays", Tier::Extension, Class::C, false,
+      "Map data views",
+      "Adds views to the map window that show where goods are produced, consumed and stored, where services "
+      "reach and where citizens walk. The last year's history is kept in the save.",
+      1, [](State& s) -> bool& { return s.ext.map_overlays; } },
     // HITCH_PFBURST (docs/extensions/handins/HITCH_PFBURST.md): a per-frame budget of the cold
     // citizens' warm-house scans (one region path search per residence), so a cold spell at high
     // speed spreads its scans over a few frames instead of one 10-20 ms frame.
@@ -603,6 +693,24 @@ const Entry kEntries[] = {
       "Show grid",
       "Draws a grid over the map so you can see where the tiles are while planning where to build.",
       0, [](State& s) -> bool& { return s.ext.show_grid; } },
+    // FPSCOUNTER (docs/extensions/handins/FPSCOUNTER.md): the frame rate the game draws at (current, average,
+    // minimum, maximum) on an FPS page of the extension window. Class A: it only counts frames, nothing saved,
+    // live. OFF by default: the page brings the toolbar's extension button, which is the player's call.
+    { "fps_counter", Tier::Extension, Class::A, false,
+      "FPS counter",
+      "Adds an FPS page to the extension window (the toolbar's Reports group) with the current, average, "
+      "minimum and maximum frame rate.",
+      0, [](State& s) -> bool& { return s.ext.fps_counter; } },
+    // BUILDINGFINDER (docs/extensions/handins/BUILDINGFINDER.md): a Find Buildings page in the extension
+    // window: a search box over every building the toolbar can place (the ones the town cannot build now
+    // too), and a favorites list the player keeps in a text file beside settings.cfg, shown in its own small
+    // window. Class A: it keeps no state in the game and nothing in the simulation reads it. OFF by default:
+    // it adds a tab to the extension window.
+    { "building_finder", Tier::Extension, Class::A, false,
+      "Building finder",
+      "Adds a Find Buildings page to the extension window: search every building by name, and keep a list of "
+      "favorites you can start placing with one click.",
+      0, [](State& s) -> bool& { return s.ext.building_finder; } },
     // TOOLNAMES (docs/extensions/handins/TOOLNAMES.md): the citizen panel names the tool the citizen carries
     // (the item's own name) instead of retail's "default tool / other tool" words. Class C: which tool each
     // citizen carries is the town's own state, recorded in the save's tail so a tool keeps its name across a
@@ -660,6 +768,30 @@ const Entry kEntries[] = {
       "two fingers move, zoom and turn the view, and a tap selects the nearest person or building. For "
       "phones and touch screens.",
       0, [](State& s) -> bool& { return s.ext.touch_pointer; } },
+    // Issue #253 (graphics/stagger_hold.h): the sun's shadow map and the water's reflection may each keep
+    // last frame's image on a near-still view, rendering at least every ext.staggered_passes_shadow /
+    // _reflection frames (2: one frame held at most, the two passes on alternate frames) and at once on a
+    // turn, a move past a small tolerance, a zoom, a settings change or a target rebuild. Class A: frames
+    // only, nothing saved, live. OFF by default on a desktop: a held frame lags moving shadows and
+    // reflections by a frame, ruled acceptable but the player's call. The Android first run turns it on
+    // (src/platform/android/app_android.cpp kPhoneSettings, ruled 2026-11-05).
+    { "staggered_passes", Tier::Extension, Class::A, false,
+      "Staggered shadow and reflection",
+      "Renders the shadows and the water's reflection every other frame while the view is still, on "
+      "alternate frames: a higher frame rate on slower devices; moving shadows and reflections may "
+      "trail by a frame.",
+      0, [](State& s) -> bool& { return s.ext.staggered_passes; } },
+    // FULLSCREENMODE (src/ext/fullscreen_mode/fullscreen_mode.h): the Options dialog's Video tab shows one
+    // "Fullscreen" combo Off / Exclusive / Borderless in place of retail's checkbox, and the DX11 renderer
+    // gains a borderless fullscreen (a windowed swap chain in a popup over the monitor, at the desktop's
+    // size; alt-tab leaves it on screen). Class A: the window only, nothing saved in a town. ON by default:
+    // with ext.fullscreen_borderless at 0 the combo's Exclusive is retail's checkbox ticked, so nothing changes
+    // until the player picks Borderless. Offered only by a renderer with an exclusive mode (DX11).
+    { "fullscreen_mode", Tier::Extension, Class::A, true,
+      "Fullscreen mode",
+      "The Video tab's Fullscreen setting becomes Off / Exclusive / Borderless. Borderless covers the "
+      "screen at the desktop's resolution and stays on screen when you switch to another window.",
+      0, [](State& s) -> bool& { return s.ext.fullscreen_mode; } },
 
 #ifdef BANISHED_UNIT_TEST
     // The unit tests' three classes (registry.h). Not compiled into the exe.
@@ -687,9 +819,13 @@ constexpr int32_t kTouchCameraButtonScales[] = { 0, 15, 20, 25, 35, 50, 75, 100,
 constexpr int32_t kPhoneSafeMargins[] = { 0, 2000, 3375, 4500, 6000 };
 constexpr int32_t kTouchPointerLifts[] = { 0, 80, 120, 160, 200, 240 };
 constexpr int32_t kTouchPointerPickRadii[] = { 0, 25, 50, 75, 100 };
+constexpr int32_t kStaggerShadowEvery[] = { 1, 2, 3, 4 };
+constexpr int32_t kStaggerReflectionEvery[] = { 1, 2, 4, 8 };
 
 const ValueKey kValueKeys[] = {
-    { "ao_quality", "ambient_occlusion", 1, 3, 2,
+    // 4 = ASSAO Lowest (half density, the phone tier; issue #253), appended after High so a stored
+    // 1..3 keeps its meaning. The Enhanced tab lists it second (Off / Lowest / Low / Medium / High).
+    { "ao_quality", "ambient_occlusion", 1, 4, 2,
       [](State& s) -> int32_t& { return s.val.ao_quality; }, nullptr, 0 },
     { "ao_opacity", "ambient_occlusion", 0, 30, 20,
       [](State& s) -> int32_t& { return s.val.ao_opacity; }, nullptr, 0 },
@@ -730,6 +866,10 @@ const ValueKey kValueKeys[] = {
     // default. Any other number reads as 60 (a discrete key).
     { "fps_cap_rate", "fps_cap", 30, 120, 60,
       [](State& s) -> int32_t& { return s.val.fps_cap_rate; }, kFpsCapRates, 4 },
+    // FULLSCREENMODE: what VideoFullscreen=1 means while the row fullscreen_mode is on: 0 = exclusive (retail's),
+    // 1 = borderless. A range key.
+    { "fullscreen_borderless", "fullscreen_mode", 0, 1, 0,
+      [](State& s) -> int32_t& { return s.val.fullscreen_borderless; }, nullptr, 0 },
     // SHOWGRID: the grid lines' hue in degrees (read every frame, so a settings.cfg edit shows at the next
     // start). A range key.
     { "show_grid_hue", "show_grid", 0, 359, 0,
@@ -785,10 +925,25 @@ const ValueKey kValueKeys[] = {
     // regrowth and green variation), on whenever the row is; the Enhanced tab's second Better trees combo.
     { "natural_tree_growth", "better_trees", 0, 1, 1,
       [](State& s) -> int32_t& { return s.val.natural_tree_growth; }, nullptr, 0 },
+    // BETTERCLOUDS.md: Better clouds' level, the Enhanced tab's "Better clouds" On / Fancy (Off is the row).
+    // Fancy adds the clouds' shadows on the ground.
+    { "better_clouds_mode", "better_clouds", 1, 2, 1,
+      [](State& s) -> int32_t& { return s.val.better_clouds_mode; }, nullptr, 0 },
     // BETTERWATER.md section 7: Better water's level, the Enhanced tab's "Better water" Plain / Fancy (Off is
     // the row). Fancy adds the shore strip on the bank side of the waterline.
     { "better_water_mode", "better_water", 1, 2, 1,
       [](State& s) -> int32_t& { return s.val.better_water_mode; }, nullptr, 0 },
+    // SHARP_SPRITES.md: Sharp UI's level, the Enhanced tab's "Sharp UI" Text / Text + icons (Off is the row).
+    // 0 = the text only (scale-matched fonts, whole-pixel quads); 1 = also the magnified sprite sheets.
+    { "sharp_ui_icons", "sharp_ui", 0, 1, 0,
+      [](State& s) -> int32_t& { return s.val.sharp_ui_icons; }, nullptr, 0 },
+    // Issue #253: the most frames the shadow map / the reflection may go between renders while the row
+    // staggered_passes is on (1 = every frame, as retail). 2 is the ruled default; settings.cfg only. Any
+    // other number reads as 2 (discrete keys).
+    { "staggered_passes_shadow", "staggered_passes", 1, 4, 2,
+      [](State& s) -> int32_t& { return s.val.staggered_passes_shadow; }, kStaggerShadowEvery, 4 },
+    { "staggered_passes_reflection", "staggered_passes", 1, 8, 2,
+      [](State& s) -> int32_t& { return s.val.staggered_passes_reflection; }, kStaggerReflectionEvery, 4 },
 };
 
 constexpr int kValueKeyCount = static_cast<int>(sizeof(kValueKeys) / sizeof(kValueKeys[0]));
@@ -804,6 +959,7 @@ const void* g_lockOwner = nullptr;
 uint32_t g_lockEpoch = 0;   // LockEpoch(): bumped by Install / LockForGame* / UnlockForGame
 bool g_keepRequestNext = false;   // KeepRequestOnNextLock(): the next LockForGame is an in-game B / C change
 bool g_lockKeepsRequest = false;  // LockKeepsRequest(): the lock held now is that reload's
+bool g_installed = false;         // Installed(): Install has run
 
 }  // namespace
 
@@ -949,6 +1105,19 @@ State Resolve(Lookup lookup, void* ctx, const char* commandLineProfile, LoadRepo
 }
 
 const Fixes&      Fix() { return g_active.fix; }
+
+namespace {
+LiveFixes g_live;
+
+// After every write of g_active's fix rows (main thread).
+void PublishLiveFixes() {
+    g_live.save_failure_notice.store(g_active.fix.save_failure_notice, std::memory_order_relaxed);
+    g_live.boot_device_lost.store(g_active.fix.boot_device_lost, std::memory_order_relaxed);
+    g_live.decal_fog_order.store(g_active.fix.decal_fog_order, std::memory_order_relaxed);
+}
+}  // namespace
+
+const LiveFixes& LiveFix() { return g_live; }
 const Extensions& Ext() { return g_active.ext; }
 const Values&     Val() { return g_active.val; }
 
@@ -967,13 +1136,17 @@ bool Active(const Entry& e)    { return e.slot(g_active); }
 void Install(const State& requested, Profile profile, bool profileFromCommandLine) {
     g_requested = requested;
     g_active = requested;
+    PublishLiveFixes();
     g_profile = profile;
     g_profileFromCommandLine = profileFromCommandLine;
     g_lockOwner = nullptr;
     ++g_lockEpoch;
     g_keepRequestNext = false;
     g_lockKeepsRequest = false;
+    g_installed = true;
 }
+
+bool Installed() { return g_installed; }
 
 Profile CurrentProfile() { return g_profile; }
 
@@ -984,6 +1157,7 @@ bool SetRequested(const Entry& e, bool on) {
     if (EntryLocked(e)) return false;   // waits for the next LockForGame
     const bool changed = e.slot(g_active) != on;
     e.slot(g_active) = on;
+    PublishLiveFixes();
     return changed;
 }
 
@@ -1033,6 +1207,7 @@ void UnlockForGame(const void* owner) {
     // Back at the menu nothing holds the lock: the active state is the request.
     for (const Entry& e : kEntries)
         e.slot(g_active) = e.slot(g_requested);
+    PublishLiveFixes();
 }
 
 bool Locked() { return g_lockOwner != nullptr; }

@@ -36,6 +36,9 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS ON)
 
+# compile_commands.json in every build dir: clang-tidy, the Clang Static Analyzer and CodeQL read it
+# (docs/history/review_20261103/README.md).
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(BANISHED_FLAVOUR "debug" CACHE STRING "debug | og | perf | release")
 set_property(CACHE BANISHED_FLAVOUR PROPERTY STRINGS debug og perf release)
 option(BANISHED_USE_CCACHE "Compile through ccache when it is on PATH" ON)
@@ -117,6 +120,19 @@ endif()
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   list(APPEND BANISHED_CXX_FLAGS -fno-delete-null-pointer-checks)
 endif()
+# BANISHED_THREAD_SAFETY=ON (clang only): clang's thread-safety analysis over the annotations of
+# src/engine/system/thread_annotations.h, a broken lock contract failing the build. OpenBA and unit.
+# GCC and MSVC ignore the annotations (the macros are empty there), so the option has nothing to
+# check on them. The Linux check: CMAKE_EXTRA="-DBANISHED_THREAD_SAFETY=ON" with clang.
+option(BANISHED_THREAD_SAFETY "clang: -Wthread-safety, a lock contract broken is an error" OFF)
+set(THREAD_SAFETY_FLAGS)
+if(BANISHED_THREAD_SAFETY)
+  if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    message(FATAL_ERROR "BANISHED_THREAD_SAFETY needs clang (got ${CMAKE_CXX_COMPILER_ID})")
+  endif()
+  set(THREAD_SAFETY_FLAGS -Wthread-safety -Werror=thread-safety-analysis)
+  list(APPEND BANISHED_CXX_FLAGS ${THREAD_SAFETY_FLAGS})
+endif()
 # (SHELL: keeps each `-include <file>` pair whole: CMake de-duplicates repeated option tokens,
 # which with two force-includes drops the second `-include` and leaves its path a bare input.)
 set(BANISHED_STRIP_LOGS -DBANISHED_STRIP_LOGS "SHELL:-include ${CMAKE_SOURCE_DIR}/src/app/log_strip.h")
@@ -140,6 +156,53 @@ elseif(BANISHED_FLAVOUR STREQUAL "release")
 else()
   message(FATAL_ERROR "BANISHED_FLAVOUR must be debug, og, perf or release (got '${BANISHED_FLAVOUR}')")
 endif()
+
+# Checking builds (docs/reference/checking_builds.md), on top of any flavour; tools/build.sh keys
+# their own build directory from env BANISHED_SANITIZE (build/cmake-<flavour>-<sanitize>):
+#   none   (default) nothing added
+#   check  libstdc++ / libc++ assertions (out-of-range operator[], bad iterators) and every
+#          uninitialised local filled with a pattern, so an uninitialised read is deterministic
+#   asan   AddressSanitizer + UBSan (the engine heap reports to ASan: src/engine/system/allocator.cpp)
+#   ubsan  UBSan alone
+#   tsan   ThreadSanitizer (not with asan; Linux only)
+#   fuzz   asan + ubsan + libFuzzer instrumentation (clang; the tests/fuzz targets)
+# Every sanitizer aborts on its first report (-fno-sanitize-recover): a report is a failed run.
+# UBSan's vptr and alignment checks are off: the binary-compatible type headers reinterpret raw
+# memory on purpose (.claude/rules/type-headers.md); they are enabled by hand for a sweep.
+set(BANISHED_SANITIZE "none" CACHE STRING "none | check | asan | ubsan | tsan | fuzz")
+set_property(CACHE BANISHED_SANITIZE PROPERTY STRINGS none check asan ubsan tsan fuzz)
+set(BANISHED_UBSAN_CHECKS
+  "bounds,null,shift,return,unreachable,vla-bound,float-cast-overflow,integer-divide-by-zero,signed-integer-overflow,bool,enum,builtin,pointer-overflow,nonnull-attribute,returns-nonnull-attribute")
+# BANISHED_SANITIZE_RECOVER=ON: a survey run that reports every finding instead of stopping at the
+# first (UBSan continues; ASan continues with ASAN_OPTIONS=halt_on_error=0).
+option(BANISHED_SANITIZE_RECOVER "checking builds: report and continue (survey) instead of aborting" OFF)
+set(BANISHED_SANITIZE_STOP -fno-sanitize-recover=all)
+if(BANISHED_SANITIZE_RECOVER)
+  set(BANISHED_SANITIZE_STOP -fsanitize-recover=all)
+endif()
+set(SANITIZE_FLAGS)
+set(SANITIZE_LINK)
+if(BANISHED_SANITIZE STREQUAL "check")
+  set(SANITIZE_FLAGS -D_GLIBCXX_ASSERTIONS -D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_EXTENSIVE
+    -ftrivial-auto-var-init=pattern)
+elseif(BANISHED_SANITIZE STREQUAL "asan")
+  set(SANITIZE_FLAGS -fsanitize=address,${BANISHED_UBSAN_CHECKS} ${BANISHED_SANITIZE_STOP}
+    -fno-omit-frame-pointer -D_GLIBCXX_ASSERTIONS)
+  set(SANITIZE_LINK -fsanitize=address,${BANISHED_UBSAN_CHECKS})
+elseif(BANISHED_SANITIZE STREQUAL "ubsan")
+  set(SANITIZE_FLAGS -fsanitize=${BANISHED_UBSAN_CHECKS} ${BANISHED_SANITIZE_STOP} -fno-omit-frame-pointer)
+  set(SANITIZE_LINK -fsanitize=${BANISHED_UBSAN_CHECKS})
+elseif(BANISHED_SANITIZE STREQUAL "tsan")
+  set(SANITIZE_FLAGS -fsanitize=thread -fno-omit-frame-pointer)
+  set(SANITIZE_LINK -fsanitize=thread)
+elseif(BANISHED_SANITIZE STREQUAL "fuzz")
+  set(SANITIZE_FLAGS -fsanitize=fuzzer-no-link,address,${BANISHED_UBSAN_CHECKS} ${BANISHED_SANITIZE_STOP}
+    -fno-omit-frame-pointer -D_GLIBCXX_ASSERTIONS)
+  set(SANITIZE_LINK -fsanitize=address,${BANISHED_UBSAN_CHECKS})
+elseif(NOT BANISHED_SANITIZE STREQUAL "none")
+  message(FATAL_ERROR "BANISHED_SANITIZE must be none, check, asan, ubsan, tsan or fuzz (got '${BANISHED_SANITIZE}')")
+endif()
+list(APPEND FLAVOUR_FLAGS ${SANITIZE_FLAGS})
 
 # ---------------------------------------------------------------------------------------
 # Profile-guided optimisation (perf/pgo/README.md). BANISHED_PGO:
@@ -260,7 +323,12 @@ set(EXT_RSC_SOURCES
   ${CMAKE_SOURCE_DIR}/src/ext/ui/Dialog/FamilyTreePage.rsc
   ${CMAKE_SOURCE_DIR}/src/ext/ui/Dialog/FamilyTreeWindow.rsc
   ${CMAKE_SOURCE_DIR}/src/ext/ui/Dialog/FamilyTreeSummary.rsc
-  ${CMAKE_SOURCE_DIR}/src/ext/ui/Dialog/ShowGridPage.rsc)
+  ${CMAKE_SOURCE_DIR}/src/ext/ui/Dialog/ShowGridPage.rsc
+  ${CMAKE_SOURCE_DIR}/src/ext/ui/Dialog/FpsCounterPage.rsc
+  ${CMAKE_SOURCE_DIR}/src/ext/ui/Dialog/BuildingFinderPage.rsc
+  ${CMAKE_SOURCE_DIR}/src/ext/ui/Dialog/FavoritesWindow.rsc
+  ${CMAKE_SOURCE_DIR}/src/ext/ui/Dialog/FullscreenMode.rsc
+  ${CMAKE_SOURCE_DIR}/src/ext/ui/Dialog/MapOverlays.rsc)
 set(EXT_RSC_GEN_DIR ${CMAKE_BINARY_DIR}/gen)
 set(EXT_RSC_GEN ${EXT_RSC_GEN_DIR}/ext_rsc_text.h)
 find_package(Python3 COMPONENTS Interpreter QUIET)
@@ -341,11 +409,15 @@ list(APPEND RENDER_SRCS ${RENDER_COMMON_SRCS})
 # per source file): at -O0 the encoder does ~7 MB/s instead of ~57 MB/s per core. The BC1 / BC3
 # decoder (a GPU without BC, bc_decode.h) runs over every retail texture at load, the same way, and
 # so does the ETC2 transcode that replaces it where the GPU samples ETC2 (docs/android/P13_MEM.md).
+# ext.sharp_ui's magnified sprite sheets (the upscale, sharp_sheet.h, and the BC3 mip chain, sharp_encode.h)
+# are built at load the same way.
 set_source_files_properties(${CMAKE_SOURCE_DIR}/src/render/common/bc4/bc4.cpp
                             ${CMAKE_SOURCE_DIR}/src/render/common/bc_decode/bc_decode.cpp
                             ${CMAKE_SOURCE_DIR}/src/render/common/etc2/etc2.cpp
                             ${CMAKE_SOURCE_DIR}/src/render/common/etc2/bc_to_etc2.cpp
                             ${CMAKE_SOURCE_DIR}/src/ext/derived_cache/hash64.cpp
+                            ${CMAKE_SOURCE_DIR}/src/ext/sharp_ui/sharp_encode.cpp
+                            ${CMAKE_SOURCE_DIR}/src/ext/sharp_ui/sharp_sheet.cpp
                             PROPERTIES COMPILE_OPTIONS "-O2")
 file(GLOB         APP_SRCS      CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/src/app/*.cpp)
 file(GLOB         DIAG_SRCS     CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/src/diag/*.cpp)
@@ -611,6 +683,10 @@ if(TARGET OpenBA)   # absent when the backend is not ready on this host (dx11 of
   add_dependencies(OpenBA ext-rsc-text openba-build-info)
 endif()
 add_dependencies(unit ext-rsc-text)
+# tests/unit/screen_keyboard_race_test.cpp compiles src/platform/android/input_android.cpp with the
+# SDL calls it makes stubbed: SDL's headers only, on that one source (`unit` links no SDL).
+set_source_files_properties(${CMAKE_SOURCE_DIR}/tests/unit/screen_keyboard_race_test.cpp
+  PROPERTIES INCLUDE_DIRECTORIES ${CMAKE_SOURCE_DIR}/third_party/SDL/include)
 target_include_directories(unit PRIVATE ${BANISHED_INCLUDES} ${CMAKE_SOURCE_DIR}/tests/unit)
 # -Og in every flavour (it was -O0): the suite runs ~2x faster (77 s -> 37 s as one process, Linux) for
 # ~10% more compile time, every test passing; the tests run optimised code, closer to the shipped -O2 /
@@ -619,6 +695,9 @@ target_include_directories(unit PRIVATE ${BANISHED_INCLUDES} ${CMAKE_SOURCE_DIR}
 target_compile_options(unit PRIVATE
   -fexceptions -fno-strict-aliasing ${BANISHED_LIFETIME_DSE_FLAG} -ffp-contract=off -Wall -Wextra -Wno-invalid-offsetof
   -g -Og -D_DEBUG -DBANISHED_UNIT_TEST ${BANISHED_PORTABLE_FLAGS} ${BANISHED_ONE_WRITE_STDIO})
+# The checking builds reach the suite too (BANISHED_SANITIZE, above).
+target_compile_options(unit PRIVATE ${SANITIZE_FLAGS} ${THREAD_SAFETY_FLAGS})
+target_link_options(unit PRIVATE ${SANITIZE_LINK})
 # Except these, -O0: under clang they call a base class's D2 destructor by its mangled name
 # (RT_ASM_LABEL, "Clang with the Itanium ABI traps in abstract-base D1"). The base destructors are
 # inline; optimised, clang inlines them into the probes' destructors and emits no D2, and on Mach-O
@@ -676,4 +755,35 @@ if(WIN32 AND BANISHED_FLAVOUR STREQUAL "debug")
   target_compile_options(font_dump PRIVATE -g -O0 -Wall -Wextra ${BANISHED_PORTABLE_FLAGS})
   target_link_options(font_dump PRIVATE -static -static-libgcc -static-libstdc++)
   target_link_libraries(font_dump PRIVATE gdi32)
+endif()
+
+# ---------------------------------------------------------------------------------------
+# Fuzz targets (BANISHED_SANITIZE=fuzz, clang on Linux; tests/fuzz/README.md). Each
+# tests/fuzz/<name>_fuzz.cpp defines LLVMFuzzerTestOneInput and becomes `fuzz_<name>`, linked
+# against the unit suite's tree sources and stubs (everything a unit test can call, a fuzz target
+# can). `cmake --build <dir> -t fuzz` builds them all. A crash input a target finds becomes a
+# unit test (tests/unit/) with the bytes inline: the failing test the fix PR carries.
+# ---------------------------------------------------------------------------------------
+if(BANISHED_SANITIZE STREQUAL "fuzz")
+  file(GLOB FUZZ_SRCS CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/tests/fuzz/*_fuzz.cpp)
+  file(GLOB FUZZ_UNIT_STUBS ${CMAKE_SOURCE_DIR}/tests/unit/*_stubs.cpp)
+  add_library(fuzz_tree STATIC EXCLUDE_FROM_ALL ${UNIT_TREE_SRCS} ${FUZZ_UNIT_STUBS})
+  target_include_directories(fuzz_tree PUBLIC ${BANISHED_INCLUDES} ${CMAKE_SOURCE_DIR}/tests/unit
+    ${CMAKE_SOURCE_DIR}/tests/fuzz)
+  target_compile_options(fuzz_tree PUBLIC
+    -fexceptions -fno-strict-aliasing ${BANISHED_LIFETIME_DSE_FLAG} -ffp-contract=off -g -O1 -D_DEBUG
+    -DBANISHED_UNIT_TEST -DBANISHED_FUZZ ${BANISHED_PORTABLE_FLAGS} ${SANITIZE_FLAGS})
+  find_package(Threads REQUIRED)
+  target_link_libraries(fuzz_tree PUBLIC Threads::Threads ${UNIT_POSIX_LIBS} wmadec freetype_min)
+  add_dependencies(fuzz_tree ext-rsc-text)
+  add_custom_target(fuzz)
+  foreach(fuzz_src ${FUZZ_SRCS})
+    get_filename_component(fuzz_name ${fuzz_src} NAME_WE)
+    string(REGEX REPLACE "_fuzz$" "" fuzz_name ${fuzz_name})
+    add_executable(fuzz_${fuzz_name} EXCLUDE_FROM_ALL ${fuzz_src})
+    set_target_properties(fuzz_${fuzz_name} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/fuzz)
+    target_link_libraries(fuzz_${fuzz_name} PRIVATE fuzz_tree)
+    target_link_options(fuzz_${fuzz_name} PRIVATE -fsanitize=fuzzer ${SANITIZE_LINK})
+    add_dependencies(fuzz fuzz_${fuzz_name})
+  endforeach()
 endif()

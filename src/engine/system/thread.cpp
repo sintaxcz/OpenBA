@@ -121,12 +121,13 @@ System::CriticalSection::~CriticalSection() {
 namespace System {
 
 // 0x18000c700  ?Lock@CriticalSection@System@@QEAAXXZ
-void CriticalSection::Lock() {
+// (Not analysed: the capability is the object, the primitive takes its _storage bytes.)
+void CriticalSection::Lock() NO_THREAD_SAFETY_ANALYSIS {
     Platform::MutexLock(&_storage);      // EnterCriticalSection
 }
 
 // 0x18000c6f0  ?Unlock@CriticalSection@System@@QEAAXXZ
-void CriticalSection::Unlock() {
+void CriticalSection::Unlock() NO_THREAD_SAFETY_ANALYSIS {
     Platform::MutexUnlock(&_storage);    // LeaveCriticalSection
 }
 
@@ -201,14 +202,29 @@ unsigned int Thread::ThreadFunc(void* param) {
         // NOT RETAIL (block LOADSTAMP): name this thread for [LoadTime] and the sampler.
         // Once per thread (a thread_local test after the first); the object is fully
         // constructed here, so its dynamic type names the role. No effect on the thread.
-        DiagThreads::RegisterNamed(typeid(*self).name(), &self->_runFlags);
-        self->_runFlags |= 1u;
+        DiagThreads::RegisterNamed(typeid(*self).name());
+        // NOT RETAIL (review F-150): retail's `OR [RBX+8],1` / `AND [RBX+8],~1` are
+        // plain RMWs on a word other threads poll; atomic here (IsWorking, Thread.h).
+        __atomic_fetch_or(&self->_runFlags, 1u, __ATOMIC_RELAXED);
+        // NOT RETAIL (block LOADSTAMP, review S-034): the sampler's busy bit, kept in
+        // the DiagThreads roster rather than read from this object, which the owner
+        // may free while the sampler still looks at the thread.
+        DiagThreads::SetBusy(true);
         self->Run();           // slot 0 — the work
         self->OnCompleted();   // slot 1
 
         Platform::EventHandle finished = self->_hFinished;
-        self->_runFlags &= ~1u;
+        // NOT RETAIL (review F-103): retail clears bit 0 BEFORE SetEvent(hFinished)
+        // (1800ca499 AND, 1800ca49d SetEvent). A caller that saw the bit clear in
+        // between and called Start() (ResetEvent(hFinished), SetEvent(hStart)) had
+        // its reset undone by this old job's SetEvent, so its WaitForFinish returned
+        // while the NEW job still ran (PathfinderThread::DrainQueue, then Map::~Map
+        // freeing the pathfinder under a live A* job). Signal first, then clear the
+        // bit with a release, so any Start() that follows the clear also follows
+        // the SetEvent.
         Platform::EventSet(finished);
+        __atomic_fetch_and(&self->_runFlags, ~1u, __ATOMIC_RELEASE);
+        DiagThreads::SetBusy(false);   // NOT RETAIL (block LOADSTAMP)
 
         r = Platform::EventWaitAny(2, handles, Platform::kInfinite);
     }

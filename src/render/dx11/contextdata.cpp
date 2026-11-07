@@ -217,9 +217,12 @@
 
 #include "device_lost_drive.h"   // BANISHED_FORCE_DEVICE_LOST=bgsave (src/diag)
 #include "options.h"
+#include "d3d_debug.h"
+#include "clamped_atoi.h"     // review F-087: atoi on BANISHED_* text
 #include "dx11_backend_access.h"
 #include "async_gpu_create/async_create.h"   // NOT RETAIL: ext.async_gpu_create
 #include "boot_device_lost/boot_device_lost.h"   // NOT RETAIL: fix.boot_device_lost
+#include "platform_window.h"   // NOT RETAIL: IsIconic, fix.boot_device_lost's minimised-window wait
 #include "system/Error.h"   // ENDGAME B.3.4b System callers: System::Error (-Iruntime/types)
 // ENDGAME B.3.5 block VC: `Video::Viewport` and `Video::Context`.
 #include "video/Context.h"
@@ -355,7 +358,7 @@ bool ForceDeviceLostThisFrame() {
     static bool fired  = false;
     if (wanted == -2) {
         const char* v = Opt().forceDeviceLost;
-        wanted = DeviceLostDrive::Armed() ? -3 : (v && *v) ? std::atoi(v) : -1;
+        wanted = DeviceLostDrive::Armed() ? -3 : (v && *v) ? ClampedAtoi(v) : -1;
         if (wanted > 0)
             std::fprintf(stderr,
                 "[DeviceLost] ARMED: a synthetic DXGI_ERROR_DEVICE_RESET will be "
@@ -453,7 +456,12 @@ bool ContextData::BeginCommands() {
         // any other reason (SetFullscreenState without the foreground, a hidden or
         // minimised window) leaves the device alive and is retried as retail retries.
         // Row off (and under the faithful profile): retail's retry, spin or crash.
-        if (resized == 0 && BootDeviceLost::On()) {
+        // A minimised window waits for its restore (review S-019): the recovery's
+        // CreateDevice / AdjustDisplay would latch its 0x0 client rect, the 0x0 colour
+        // buffer fails, and the recovery ends in the fatal D3D11 Error box. Resize keeps
+        // settingsChanged set, so the first frame after the restore fails the reset again
+        // and recovers with the real client size.
+        if (resized == 0 && BootDeviceLost::On() && !Platform::Window::IsIconic(device->windowHandle)) {
             ID3D11Device* const d3dDevice = dd->d3dDevice;
             const HRESULT removed = d3dDevice->GetDeviceRemovedReason();
             if (removed != 0) {
@@ -647,6 +655,7 @@ void ContextData::Finish() {
         std::lock_guard<std::recursive_mutex> presentLock(Dx11PresentMutex());
         hr = dd->swapChain->Present(sync, 0);
     }
+    D3dDebug::Drain();   // NOT RETAIL: BANISHED_D3D_DEBUG's info queue (no-op without it)
 
     // The PLAN 5.5 drive. Substitutes the Present result and nothing else; see
     // the block comment above ForceDeviceLostThisFrame.

@@ -36,6 +36,7 @@
 #include "Game/PlayerToolManager.h"   // the camera bodies' class (B.4 GAME-a)
 #include "Game/PlayerController.h"    // m_playerController's class
 #include "options.h"
+#include "clamped_atoi.h"     // review F-087: BANISHED_CAMERA_PIN read without sscanf
 #include "showroom.h"          // BANISHED_SHOWROOM camera focus (src/diag/)
 #include "Game/exe_bodies.h"   // Reimpl_MapGetTerrainPos
 #include <cstdint>
@@ -268,8 +269,12 @@ void PlayerToolManager::UpdateCamera(int inputFlag, int64_t timeTicks) {
         if (grid) {
             float factor = clampf(1.0f - (pc->distance - kClampBase) / kClampSpan, 0.0f, 1.0f);
             float halfExtent = (float)grid->size * kHalf * factor;
-            pc->target.x = clampf(pc->target.x, -halfExtent, halfExtent);
-            pc->target.y = clampf(pc->target.y, -halfExtent, halfExtent);
+            // Retail 0x1400ff451..0x1400ff4ae: Math::Vector3::Clamp(target, (-h,-h,0), (h,h,0))
+            // (Runtime 0x18007cbe0) on the whole focus, z included (R12D = 0 at +0x48 and
+            // +0x58): the look-at height is 0 after every call. A NaN x / y comes out as +h.
+            const Math::Vector3 lo(-halfExtent, -halfExtent, 0.0f);
+            const Math::Vector3 hi(halfExtent, halfExtent, 0.0f);
+            pc->target = pc->target.Clamp(lo, hi);
         }
     }
 
@@ -322,11 +327,20 @@ void PlayerToolManager::UpdateCamera(int inputFlag, int64_t timeTicks) {
         s_pin = 0;
         if (e && e[0]) {
             s_sweep = std::strstr(e, ",sweep") != nullptr;
-            float px, py, pd, pyaw;
-            int got = std::sscanf(e, "%f,%f,%f,%f", &px, &py, &pd, &pyaw);
+            // "%f,%f,%f,%f", read with the checked scanner (review F-087: sscanf's %f is
+            // undefined on a value out of float range).
+            float pin[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+            const int got = ScanClampedFloats(e, pin, 4);
             if (got >= 2) {
-                s_pinX = px; s_pinY = py; if (got >= 3) s_pinDist = pd; s_pin = 1;
-                if (got >= 4) { s_pinYaw = pyaw; s_pinHasYaw = true; }
+                s_pinX = pin[0];
+                s_pinY = pin[1];
+                if (got >= 3)
+                    s_pinDist = pin[2];
+                s_pin = 1;
+                if (got >= 4) {
+                    s_pinYaw = pin[3];
+                    s_pinHasYaw = true;
+                }
             }
             // "town[,dist]": pin on the start-town spawn tile, whatever seed/map size
             // produced it (the stress harness uses this — the spawn tile differs per map).
@@ -340,9 +354,14 @@ void PlayerToolManager::UpdateCamera(int inputFlag, int64_t timeTicks) {
                     if (dim > 0) {
                         s_pinX = (float)tx - ((float)(dim >> 1) - 0.5f);
                         s_pinY = (float)ty - ((float)(dim >> 1) - 0.5f);
-                        const int gotTown = std::sscanf(e + 4, ",%f,%f", &pd, &pyaw);
-                        if (gotTown >= 1) s_pinDist = pd;
-                        if (gotTown >= 2) { s_pinYaw = pyaw; s_pinHasYaw = true; }
+                        // ",%f,%f" after "town".
+                        float town[2] = {0.0f, 0.0f};
+                        const int gotTown = e[4] == ',' ? ScanClampedFloats(e + 5, town, 2) : 0;
+                        if (gotTown >= 1) s_pinDist = town[0];
+                        if (gotTown >= 2) {
+                            s_pinYaw = town[1];
+                            s_pinHasYaw = true;
+                        }
                         s_pin = 1;
                         std::fprintf(stderr, "[CameraPin] town tile=(%d,%d) dim=%d -> world (%.1f,%.1f) dist=%.0f\n",
                                      tx, ty, dim, s_pinX, s_pinY, s_pinDist);
@@ -353,7 +372,7 @@ void PlayerToolManager::UpdateCamera(int inputFlag, int64_t timeTicks) {
         }
     }
     // BANISHED_SHOWROOM (src/diag/showroom.h): the pin follows the showroom's shot sequence,
-    // one placed building at a time.
+    // one placed building at a time, or stays on the forest under a bench line.
     {
         float focusX = 0.0f;
         float focusY = 0.0f;
@@ -368,6 +387,9 @@ void PlayerToolManager::UpdateCamera(int inputFlag, int64_t timeTicks) {
             s_pinDist = focusDist;
             s_pinYaw = focusYaw;
             s_pinHasYaw = true;
+            // A "bench ... sweep" line moves the camera around the forest centre as ,sweep does.
+            if (Showroom_BenchSweep())
+                s_sweep = true;
         }
     }
     if (s_pin) {

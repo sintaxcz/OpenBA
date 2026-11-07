@@ -69,7 +69,7 @@ namespace IO {
 
 bool Persistence::BeginGetSaveGameInfo(const System::String& name, int count) {
 
-    if (_worker._runFlags & 1u) return false;
+    if (_worker.IsWorking()) return false;
 
     // C++17 constructs GetSaveFilename's result STRAIGHT INTO `fn`.
     // `AsString()` is the same eight bytes (Filename IS a String,
@@ -77,10 +77,13 @@ bool Persistence::BeginGetSaveGameInfo(const System::String& name, int count) {
     System::Filename fnFile(GetSaveFilename(name));
     const System::String& fn = fnFile.AsString();
 
-    // Both are `Collection::Array<T>::~Array()` (0x18002a930, 0x180024aa0),
-    // called on the live members exactly where retail calls them.
-    _worker._blockDescs.~Array();                                    // 0x18002a930
-    _worker._blockPtrs.~Array();                                     // 0x180024aa0
+    // Both are the `Collection::Array<T>::~Array()` bodies (0x18002a930, 0x180024aa0),
+    // run on the live members exactly where retail calls them.
+    // NOT RETAIL (spelling only): spelled DestroyAndFree, the same ClearCallback body,
+    // because an explicit destructor call would end the members' lifetime
+    // ([basic.life]) while the worker job still uses them.
+    _worker._blockDescs.DestroyAndFree();                            // 0x18002a930
+    _worker._blockPtrs.DestroyAndFree();                             // 0x180024aa0
 
     _worker._command = 3;
 

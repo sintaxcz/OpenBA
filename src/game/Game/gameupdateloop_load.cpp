@@ -49,6 +49,7 @@
 #include "WorkScheduler.h"           // m_tutorial's class (B.4 GAME-a)
 #include "EventLog.h"                // m_eventNotifier's class (B.4 GAME-a)
 #include "MusicPlayer.h"             // m_musicPlayer's class (B.4 GAME-a)
+#include "Game/MusicList.h"          // step 27's Find type gate (MusicList::TypeId)
 #include "Minimap.h"                 // m_imageCapture's class (B.4 GAME-a)
 #include "MapGenerator.h"            // m_mapConfig's class (B.4 GAME-a)
 #include "Game/TerrainGenerator.h"     // m_terrainConfig->_field80
@@ -89,6 +90,8 @@
 // class C extension's state
 #include "ext/savetail.h"
 #include "ext/show_grid/show_grid.h"   // EXT SEAM (NOT RETAIL, SHOWGRID.md): Ext::ShowGrid::OnGameStart
+#include "ext/map_overlays/map_overlays.h"   // EXT SEAM (NOT RETAIL, docs/extensions/handins/MAPOVERLAYS.md): Ext::MapOverlays::OnGameStart
+#include "ext/better_clouds/better_clouds.h"   // EXT SEAM (NOT RETAIL, docs/extensions/handins/BETTERCLOUDS.md): Ext::BetterClouds::SkyLoaded
 #include "ext/fast_paths/fast_paths.h"   // EXT SEAM (NOT RETAIL, docs/extensions/handins/FASTPATHS.md): Ext::FastPaths::SelectForGame
 #include "ext/path_workers/path_workers.h"   // EXT SEAM (NOT RETAIL, docs/extensions/handins/PATHWORKERS.md): Ext::PathWorkers::SelectForGame
 #include "load_time.h"   // [LoadTime] stamps (NOT RETAIL, print-only; block LOADSTAMP)
@@ -743,6 +746,9 @@ void GameUpdateLoop::Load() {
     // EXT SEAM (NOT RETAIL, docs/extensions/handins/SHOWGRID.md): ext.show_grid (class A) starts every
     // game with its grid hidden.
     Ext::ShowGrid::OnGameStart();
+    // EXT SEAM (NOT RETAIL, docs/extensions/handins/MAPOVERLAYS.md): ext.map_overlays (class C) starts every
+    // game on retail's map; its history was emptied by the reset above (a load's tail record refills it)
+    Ext::MapOverlays::OnGameStart();
     // ext.fast_paths (class B) reads the lock here; final for a new game, a
     // load's manifest replaces it in SaveRestore and the second call below
     // re-reads it (src/ext/fast_paths/fast_paths.h).
@@ -994,17 +1000,26 @@ void GameUpdateLoop::Load() {
         m_imageCapture = minimap;
     }
 
-    // Step 27 — MusicTracks struct (+0x80, 0x18): {idx=-1, res=null (Find deferred), 0}.
+    // Step 27 — MusicPlayer (+0x80, 0x18): {effect -1, the MusicTracks list, 0}.
+    // Retail 0x1400972a1..0x14009732e: MemAlloc(0x18, 4); Find("Game/MusicTracks.rsc")
+    // (0x1400972bb string, 0x1400972ef the Find); IsDerivedFrom(MusicList) (0x140097307),
+    // null on a mismatch; +0x00 = -1, +0x08 = the list, +0x10 = 0. Every Load does the
+    // Find, so each new game's player has its list (review F-188: the port deferred it to
+    // a once-per-process static in MusicPlayer::Update, and later games had no music).
     {
         void* mem = AllocSub<void>(0x18, 4);
         MusicPlayer* player = mem ? new (mem) MusicPlayer : nullptr;
         if (player) {
+            MusicList* list = nullptr;
+            if (::Object::ExternalFactory::_singleton) {
+                System::Filename fname("Game/MusicTracks.rsc");
+                ::Object::External* found =
+                    ::Object::ExternalFactory::_singleton->FindOrLoadAs<::Object::External>(fname);
+                if (found && ::Object::IsDerivedFromNullSafe(found, MusicList::TypeId()))
+                    list = static_cast<MusicList*>(found);
+            }
             player->effect = 0xFFFFFFFFu;         // -1
-            player->trackList = nullptr;          // MusicTrackList - DEFERRED.
-            // BLOCKER for porting MusicPlayer::Update (0x1400a40e0): that
-            // function reads *(int*)(musicPlayer[+0x08] + 0x28) as the track
-            // count with no null check, so it MUST NOT be wired until this
-            // Find("Game/MusicTracks.rsc") is done. See LANE1 report row 39.
+            player->trackList = list;
             player->field_0x10 = 0;
         }
         m_musicPlayer = player;
@@ -1013,6 +1028,9 @@ void GameUpdateLoop::Load() {
     // Step 28 — SkyMesh MeshInstance (+0x108): the sky `_clear_` dome (helper above).
     LoadTime::Stamp("gul.skymesh");   // NOT RETAIL: print-only (steps 28-30)
     BuildSkyMesh_Step28(this);
+    // EXT SEAM (NOT RETAIL, docs/extensions/handins/BETTERCLOUDS.md): ext.better_clouds remembers the
+    // sky's materials and bakes its noise once; its per-frame call swaps their passes while the row is on.
+    Ext::BetterClouds::SkyLoaded(m_skyMesh);
 
     // Step 29 — Seasons/Events StringTables. Fill the +0x138 event-log struct's
     // StringTable slots: +0x00 = events (message templates, indexed by eventType),

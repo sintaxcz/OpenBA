@@ -214,10 +214,19 @@
 #include "system/Value.h"          // System::Time, System::Random
 #include "system/Timer.h"          // ENDGAME B.3.9 SS1: Timer::_secondsPerTick
 #include "collection/Collection.h"   // Array<EmitterInstance>::operator=
+#include "audio/audio_cvtt.h"           // Audio::CvttSd2Si64 (review F-136)
 
 namespace {
 
 using namespace RtAudio;
+
+// Review F-095 / F-119 bounds (NOT RETAIL): Scene::paused[5] and the volumes[5]
+// table are indexed by SoundType, Channel::platformChannel[8] / channelFlags[8]
+// by sample index.
+constexpr uint64_t kSoundTypeCount = 5;
+constexpr int32_t  kChannelSamples = 8;
+static_assert(sizeof(Audio::Scene::paused) == kSoundTypeCount, "paused[5]");
+static_assert(sizeof(Audio::Scene::Channel::channelFlags) == kChannelSamples, "channelFlags[8]");
 
 // ---- attendance ------------------------------------------------------------
 uint64_t g_updates        = 0;   // calls
@@ -325,6 +334,11 @@ bool Scene::Update(System::Time delta, System::Time now, System::Random& rng,
             AttenutedEffect* const slot = &table[k];
             if (slot->idTag == 0) continue;
             const int64_t soundType = static_cast<int32_t>(slot->soundType);
+            // NOT RETAIL (review F-119, undefined behaviour): the soundType comes
+            // from the save (RtAudio_Scene_SerializeEffectSlots) and indexes
+            // paused[5] here, then the Channel's paused / volumes reads below;
+            // retail has no bound. A slot with no valid SoundType is left alone.
+            if (static_cast<uint64_t>(soundType) >= kSoundTypeCount) continue;
             if (paused[soundType] != 0) continue;       // 1800df745
             ++g_effectsSeen;
 
@@ -421,6 +435,9 @@ bool Scene::Update(System::Time delta, System::Time now, System::Random& rng,
             Channel* const ch = &chans[c];
             if (ch->handleTag == 0) continue;
             const int64_t soundType = static_cast<int32_t>(ch->soundType);
+            // NOT RETAIL (review F-119, undefined behaviour): the same bound for
+            // a Channel's soundType, which indexes paused[5] and volumes[5].
+            if (static_cast<uint64_t>(soundType) >= kSoundTypeCount) continue;
             if (paused[soundType] != 0) continue;           // 1800df8b9
             ++g_channelsSeen;
 
@@ -431,8 +448,10 @@ bool Scene::Update(System::Time delta, System::Time now, System::Random& rng,
                 // than storing a zero. Reproduced as the division because the
                 // two differ when _secondsPerTick is 0 (0.0/0.0 is NaN, and
                 // CVTTSD2SI of NaN is INT64_MIN, not 0).
+                // NOT RETAIL (review F-136): CvttSd2Si64 gives that INT64_MIN
+                // without the C++ cast's UB.
                 const double z = 0.0 / spt;                       // 1800df8e2
-                windowLo = static_cast<int64_t>(z);               // 1800df8ea
+                windowLo = Audio::CvttSd2Si64(z);                 // 1800df8ea
                 ch->started = 1;                                  // 1800df8ef
             }
             const int64_t windowHi = deltaTicks + startTime;      // 1800df8fc
@@ -451,7 +470,12 @@ bool Scene::Update(System::Time delta, System::Time now, System::Random& rng,
                 // retail (1800dfc53 `CMP R10D,[RDI+0x38]`), not cached. Kept as
                 // a re-read: caching it is the kind of tidy that is invisible
                 // until something in the loop can change it.
-                for (i = 0; i < effect->_samples._size; ++i) {
+                // NOT RETAIL (review F-095, undefined behaviour): the Channel has
+                // kChannelSamples (8) platformChannel / channelFlags slots, the
+                // sample count is resource data; retail has no cap and a ninth
+                // sample writes past the Channel. Samples past the eighth are
+                // not played.
+                for (i = 0; i < effect->_samples._size && i < kChannelSamples; ++i) {
                     uint8_t* flag = &ch->channelFlags[i];
                     Device::AudioChannel** pchan = &ch->platformChannel[i];
 
@@ -460,11 +484,24 @@ bool Scene::Update(System::Time delta, System::Time now, System::Random& rng,
                     const SoundEffect::Sample* const sample = &effect->_samples._data[i];
 
                     const double sec = static_cast<double>(sample->startSeconds);
-                    const int64_t at = static_cast<int64_t>(sec / spt);   // 1800df965
+                    // NOT RETAIL (review F-136): CVTTSD2SI's INT64_MIN for a huge
+                    // or inf startSeconds, without the C++ cast's UB.
+                    const int64_t at = Audio::CvttSd2Si64(sec / spt);     // 1800df965
 
                     if (at >= windowLo && at < windowHi) {
                         // ---- this sample starts in this frame's window ----
                         const int32_t variantCount = sample->variants._size;   // 1800df97c
+                        // NOT RETAIL (review F-120, undefined behaviour): a sample
+                        // with no variants indexes variants._data[0] through null
+                        // in retail. It starts nothing, as when no Device slot is
+                        // free: no draws, no channel, the started flag set (and
+                        // the loop's ended count, which `continue` skips).
+                        if (variantCount <= 0) {
+                            *pchan = nullptr;
+                            *flag |= 1;
+                            if (*flag & 2) ++endedCount;
+                            continue;
+                        }
                         uint32_t pick = 0;
                         if (variantCount != 0) {                          // 1800df988
                             pick = RngDraw(rng) % static_cast<uint32_t>(variantCount);
@@ -494,24 +531,36 @@ bool Scene::Update(System::Time delta, System::Time now, System::Random& rng,
                         if (device) {
                             int32_t k = 0;
                             for (; k < 0x40; ++k) {                       // 1800dfadf
-                                if ((device->_channels[k].flags & 1) == 0) break;   // 1800dfad0
+                                if ((device->_channels[k].LoadFlags() & 1) == 0) break;   // 1800dfad0
                             }
                             if (k < 0x40) freeSlot = k;
                         }
                         if (freeSlot >= 0) {
+                            // NOT RETAIL (review S-026): retail stores `source` after PlayPlatform
+                            // returns (1800dfb3e after the CALL at 1800dfb17), and for a streamed
+                            // buffer PlayPlatform has already woken the stream worker
+                            // (Stream::Play's SetEvent, reached at 1800de9e4). Stream::Run reads
+                            // `_channels[slot].source` with no lock, a data race in which the worker
+                            // can read null and leave the track silent. The store is made before the
+                            // call, so the wake orders it; the slot's old value is put back when
+                            // PlayPlatform fails, as retail stores nothing then.
+                            Device::AudioChannel* const s = &device->_channels[freeSlot];
+                            SoundBuffer* const previousSource = s->source;
+                            s->source = bufferRef;
                             if (device->PlayPlatform(
                                     freeSlot,
                                     Object::ExternalPtr<SoundBuffer>(bufferRef),
                                     ch->startTime,
                                     mix, pitch, vThird)) {                // 1800dfb17
                                 ++g_samplesPlaced;
-                                Device::AudioChannel* const s = &device->_channels[freeSlot];
-                                s->flags |= 1u;                           // 1800dfb39
-                                s->source = bufferRef;                    // 1800dfb3e
+                                s->OrFlags(1u);                           // 1800dfb39 (atomic, review F-138)
+                                // 1800dfb3e: `source = bufferRef`, stored above (S-026).
                                 s->onComplete = &Scene::OnSoundEnded;     // 1800dfb4a
                                 s->userData = this;                       // 1800dfb4f
                                 s->userValue = tag;                       // 1800dfb58
                                 placed = s;                               // 1800dfb64
+                            } else {
+                                s->source = previousSource;
                             }
                             // PlayPlatform false -> placed stays null (1800dfb27)
                         } else {
@@ -553,7 +602,13 @@ bool Scene::Update(System::Time delta, System::Time now, System::Random& rng,
             // recycles its channel on the first Update. That is retail's
             // behaviour and it is reached through the `jle 1800dfc68` at
             // 1800df920, which skips the inner loop entirely.
-            if (endedCount == effect->_samples._size) {                   // 1800dfc68
+            // NOT RETAIL (review F-095): compared with the samples the loop can
+            // track (at most kChannelSamples), or a SoundEffect with more never
+            // recycles its channel. Identical for 8 or fewer.
+            const int32_t trackedSamples = effect->_samples._size < kChannelSamples
+                                               ? effect->_samples._size
+                                               : kChannelSamples;
+            if (endedCount == trackedSamples) {                           // 1800dfc68
                 ++g_channelsFreed;
 
                 // Find the EffectSlot whose channelHandle equals this

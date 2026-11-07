@@ -264,10 +264,15 @@ public:
     // and Update at a third (docs/android/P13_OVERLAP.md):
     //   kExtBeforeTransition  before the loop transition's Shutdown and delete (the
     //                    render thread is joined: nothing it reads is freed under it).
+    // and the window-message observer (src/app/main.cpp) at a fourth (review S-002 / S-010):
+    //   kExtBeforeActivate  before the pump dispatches a WM_ACTIVATE (the render thread is
+    //                    joined: the activation handlers rebuild the swap chain and reset
+    //                    the context it draws with).
     // Null: Frame is retail's body plus the two null tests, Update plus one.
     static constexpr int32_t kExtBeforeSteps      = 0;
     static constexpr int32_t kExtFrameTail        = 1;
     static constexpr int32_t kExtBeforeTransition = 2;
+    static constexpr int32_t kExtBeforeActivate   = 3;
     using ExtFrameFn = void (*)(MainLoop& loop, int32_t point, float alpha, float time);
     static ExtFrameFn _extFrame;   // defined in mainloop_frame.cpp
     // EXT SEAM (NOT RETAIL, docs/extensions/handins/HITCH_SAVESNAP.md, HITCH_BGSAVE.md): ext.background_save's video-error barrier.
@@ -276,6 +281,18 @@ public:
     // Externals and the loop releases the terrain and minimap images the worker serialises).
     using ExtVideoErrorBarrierFn = void (*)();
     static ExtVideoErrorBarrierFn _extVideoErrorBarrier;   // defined in mainloop_video.cpp
+    // EXT SEAMS (NOT RETAIL, src/ext/registry_boot.cpp VideoLost / VideoRestored): video objects made at
+    // run time. OnVideoError destroys every video External and OnVideoRestart reloads each BY PATH, from
+    // its compiled file; an object an extension built at run time has none, so it came back empty (no
+    // text, no icons) or kept a dead device's state (a red dialog, a GPU hang). Null by default.
+    //   _extVideoLost      OnVideoError, after the barrier, before the walk: the owners drop what they
+    //                      rebuild themselves later (ext.sharp_ui's sheet copies, ext.better_water's
+    //                      shore programs).
+    //   _extVideoRestored  OnVideoRestart, after the reload: the owners fill their objects again in place
+    //                      (the resource providers' sheet textures, src/ext/resources/sheet_builder.h).
+    using ExtVideoLostFn = void (*)();
+    static ExtVideoLostFn _extVideoLost;       // defined in mainloop_video.cpp
+    static ExtVideoLostFn _extVideoRestored;   // defined in mainloop_video.cpp
     // FIX SEAM (NOT RETAIL, docs/retail_bugs.md section 10): fix.boot_device_lost. Null by default
     // (src/ext/registry_boot.cpp points it at the live bool). While it reads true, OnVideoError and
     // OnVideoRestart skip the Save::SaveLoad walks when no SaveLoad exists yet (a device loss before

@@ -27,7 +27,12 @@
 //
 // DEVICE. Pause() (the device going away: exit, a device-lost recovery) stops new materializations
 // and waits for the running ones; Resume() (a device made) lets them go on. A record that meets a
-// paused table stays recorded: the next use after Resume materializes it on the new device.
+// paused table stays recorded: the next use after Resume materializes it on the new device. No
+// sweep gives anything back once Pause has returned (it re-reads the flag after the gate wait).
+//
+// PUBLICATION. Publish and Evict store the handle a use tests (`if (handle == nullptr) Ensure`) and
+// the gather's Made tests read with no lock: they go through StorePublished / LoadPublished below
+// (release / acquire), never a plain access.
 //
 // Threads: one mutex, two condition variables; nothing heavy under the mutex but an eviction's
 // releases. Ensure's fast path is one relaxed load when nothing is recorded (the backend tests its
@@ -42,13 +47,32 @@
 #include <memory>
 #include <mutex>
 #include <thread>
+#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
 #include "create_on_demand/use_tracker.h"
+#include "system/annotated_mutex.h"   // Sys::Mutex / Sys::MutexLock (clang -Wthread-safety)
 
 namespace CreateOnDemand {
+
+// A companion's handle field (a plain member of a binary-laid-out class, so not a std::atomic): a
+// prefetch worker's Publish / a sweep's Evict store it while uses and the gather test it with no lock.
+// A plain access on both sides is a data race (review F-169 / F-170); these are the release store and
+// the acquire load (C++17 has no atomic_ref; GCC and Clang take the builtins on any pointer field).
+// A use that loads a non-null handle also sees every field Publish wrote before it.
+template <class T>
+inline T LoadPublished(const T& field) {
+    static_assert(std::is_pointer<T>::value || std::is_integral<T>::value, "a handle field");
+    return __atomic_load_n(&field, __ATOMIC_ACQUIRE);
+}
+
+template <class T>
+inline void StorePublished(T& field, T value) {
+    static_assert(std::is_pointer<T>::value || std::is_integral<T>::value, "a handle field");
+    __atomic_store_n(&field, value, __ATOMIC_RELEASE);
+}
 
 // What a materialization came to.
 enum class Outcome : uint8_t {
@@ -103,7 +127,7 @@ public:
     // often worker 0 runs Sweep by itself (0 = only when called).
     void SetIdleLimit(uint32_t epochs, std::chrono::milliseconds epochLength);
     // Advance the epoch and evict what is idle. Returns the number evicted.
-    int64_t Sweep();
+    int64_t Sweep() EXCLUDES(_mutex, _sweepMutex);
     // Run after every sweep that evicted something (no lock held): the backend's summary line.
     void SetSweepHook(void (*hook)(int64_t evicted)) { _sweepHook = hook; }
 
@@ -151,37 +175,44 @@ private:
         bool                    kept    = false;   // Keep: never evicted
     };
 
-    void EnsureSlow(const void* obj);
-    void ForgetSlow(const void* obj);
+    // How long a sweep waits at the gate for the uses in progress before it gives up (Sweep).
+    static constexpr std::chrono::milliseconds kGateWaitLimit{200};
+
+    void EnsureSlow(const void* obj) EXCLUDES(_mutex);
+    void ForgetSlow(const void* obj) EXCLUDES(_mutex);
     // Runs the record of `obj` (claimed by the caller: state Running) and publishes it. Called and
     // returns with `lock` held.
-    void RunClaimed(std::unique_lock<std::mutex>& lock, const void* obj, bool onUse);
-    void Untrack(Entry& e, const void* obj);
+    void RunClaimed(Sys::MutexLock& lock, const void* obj, bool onUse) REQUIRES(_mutex);
+    void Untrack(Entry& e, const void* obj) REQUIRES(_mutex);
     // Prefetch's body, with the table's mutex held.
-    void QueueLocked(Entry& e, const void* obj);
-    void StartWorkers();
-    void WorkerMain(int index);
+    void QueueLocked(Entry& e, const void* obj) REQUIRES(_mutex);
+    void StartWorkers() REQUIRES(_mutex);
+    void WorkerMain(int index) EXCLUDES(_mutex);
 
-    std::mutex                                 _mutex;
+    // GUARDED_BY: checked by clang's thread-safety analysis (system/thread_annotations.h). The
+    // deliberate exception is `_count`, the atomic fast path Ensure / Forget / Prefetch read before
+    // the lock (a stale non-zero only takes the slow path; a zero means no record exists for any
+    // object the caller still holds). `_stamps` and `_gate` are lock-free (use_tracker.h).
+    Sys::Mutex                                 _mutex ACQUIRED_AFTER(_sweepMutex);
     std::condition_variable                    _doneCv;   // a record finished or the table resumed
     std::condition_variable                    _workCv;   // a record was queued or the table resumed
-    std::unordered_map<const void*, Entry>     _entries;
-    std::unordered_set<const void*>            _made;     // the entries in state Made (the sweep's scan)
-    std::deque<const void*>                    _queue;
-    std::vector<std::thread>                   _threads;
+    std::unordered_map<const void*, Entry>     _entries GUARDED_BY(_mutex);
+    std::unordered_set<const void*>            _made GUARDED_BY(_mutex);   // the entries in state Made (the sweep's scan)
+    std::deque<const void*>                    _queue GUARDED_BY(_mutex);
+    std::vector<std::thread>                   _threads GUARDED_BY(_mutex);
     std::atomic<int64_t>                       _count{0};   // _entries.size(), for the fast path
     std::atomic<uint32_t>                      _epoch{1};
     UseStamps                                  _stamps;
     UseGate                                    _gate;
-    std::mutex                                 _sweepMutex;   // one sweep at a time
+    Sys::Mutex                                 _sweepMutex;   // one sweep at a time
     void                                     (*_sweepHook)(int64_t) = nullptr;
-    uint32_t                                   _idleEpochs  = 0;
-    std::chrono::milliseconds                  _epochLength{0};
+    uint32_t                                   _idleEpochs GUARDED_BY(_mutex) = 0;
+    std::chrono::milliseconds                  _epochLength GUARDED_BY(_mutex){0};
     int                                        _workers;
-    int                                        _running = 0;
-    bool                                       _paused  = false;
-    bool                                       _stop    = false;
-    Stats                                      _stats;
+    int                                        _running GUARDED_BY(_mutex) = 0;
+    bool                                       _paused GUARDED_BY(_mutex) = false;
+    bool                                       _stop GUARDED_BY(_mutex) = false;
+    Stats                                      _stats GUARDED_BY(_mutex);
 };
 
 }  // namespace CreateOnDemand

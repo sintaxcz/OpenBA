@@ -432,6 +432,96 @@ def draw_wade(px):
     ])
 
 
+def draw_spawn_origin(px):
+    # two figures standing on a cross-hair (new citizens placed at the map centre)
+    _paint(px, [
+        ".....++.....",
+        ".....++.....",
+        "..#..++..#..",
+        ".###.++.###.",
+        "..#..++..#..",
+        "++#++++++#++",
+        "+###++++###+",
+        ".#.#.++.#.#.",
+        ".#.#.++.#.#.",
+        ".....++.....",
+        ".....++.....",
+        "............",
+    ])
+
+
+def draw_stream_wait(px):
+    # a music note beside a pause sign (the streamed music stops before it is freed)
+    _paint(px, [
+        "....####....",
+        "....#..#....",
+        "....#..#....",
+        "....#..#....",
+        "....#..#....",
+        "..###.###...",
+        ".########...",
+        ".###.###....",
+        "............",
+        ".......++.++",
+        ".......++.++",
+        ".......++.++",
+    ])
+
+
+def draw_outline_clip(px):
+    # a map frame with the camera trapezoid whole, its far side cut at the frame's edge
+    _paint(px, [
+        "############",
+        "#..........#",
+        "#++++++++++#",
+        "#.+......+.#",
+        "#..+....+..#",
+        "#...+..+...#",
+        "#...++++...#",
+        "#..........#",
+        "#..........#",
+        "#..........#",
+        "#..........#",
+        "############",
+    ])
+
+
+def draw_empty_status(px):
+    # a "!" status icon in a box over an empty bench (a problem-icon click with no citizen left)
+    _paint(px, [
+        "..########..",
+        "..#++++++#..",
+        "..#+++#++#..",
+        "..#+++#++#..",
+        "..#++++++#..",
+        "..#+++#++#..",
+        "..########..",
+        "............",
+        "............",
+        "############",
+        ".#........#.",
+        ".#........#.",
+    ])
+
+
+def draw_bridge_fog(px):
+    # a bridge over water lines, haze dots across it (the decal under a bridge fades into fog)
+    _paint(px, [
+        "............",
+        "#.#.#.#.#.#.",
+        "............",
+        "############",
+        "############",
+        ".##......##.",
+        ".#........#.",
+        ".#........#.",
+        "++++++++++++",
+        "............",
+        "..++++++++..",
+        "............",
+    ])
+
+
 ICONS = {
     "icon_slide": ("fix", draw_slide),               # "!" marker over a ground line
     "residence_goto": ("fix", draw_goto),            # house with a target box on the wall
@@ -456,4 +546,9 @@ ICONS = {
     "autotrade_free_goods": ("fix", draw_coin_crossed),   # a crate kept back beside a coin
     "input_fetch_room": ("fix", draw_load_fits),     # a short load into a nearly full bin
     "stranded_wade": ("fix", draw_wade),             # a figure in the water, a house on the bank
+    "debug_spawn_origin": ("fix", draw_spawn_origin),   # two figures on a cross-hair
+    "statusbar_empty_town": ("fix", draw_empty_status),   # a "!" status icon over an empty bench
+    "stream_free_wait": ("fix", draw_stream_wait),   # a music note beside a pause sign
+    "minimap_outline_clip": ("fix", draw_outline_clip),   # a map frame with a whole camera trapezoid
+    "decal_fog_order": ("fix", draw_bridge_fog),     # a bridge over water under haze dots
 }

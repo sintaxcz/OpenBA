@@ -9,7 +9,7 @@ SpriteSheet resource
 	String _materialName = "ExtensionsSpritesMaterial.rsc";
 	String _imageName = "Build/ExtensionsSprites.png";
 	int _imageWidth = 512;		// 512 since 2026-10-18: 256 x 256 held 28 sprites (the 29th did not fit)
-	int _imageHeight = 512;
+	int _imageHeight = 1024;	// 1024 since 2026-11-04: 512 x 512 held 115 sprites (the 116th did not fit)
 	bool _padForFiltering = true;
 
 	Sprite _sprites
@@ -49,6 +49,11 @@ SpriteSheet resource
 		{ String _name = "ExtensionsEntry_autotrade_free_goods";	String _source = "Sprite/Extensions/Entry_autotrade_free_goods.png"; }
 		{ String _name = "ExtensionsEntry_input_fetch_room";	String _source = "Sprite/Extensions/Entry_input_fetch_room.png"; }
 		{ String _name = "ExtensionsEntry_stranded_wade";	String _source = "Sprite/Extensions/Entry_stranded_wade.png"; }
+		{ String _name = "ExtensionsEntry_debug_spawn_origin";	String _source = "Sprite/Extensions/Entry_debug_spawn_origin.png"; }
+		{ String _name = "ExtensionsEntry_statusbar_empty_town";	String _source = "Sprite/Extensions/Entry_statusbar_empty_town.png"; }
+		{ String _name = "ExtensionsEntry_stream_free_wait";	String _source = "Sprite/Extensions/Entry_stream_free_wait.png"; }
+		{ String _name = "ExtensionsEntry_minimap_outline_clip";	String _source = "Sprite/Extensions/Entry_minimap_outline_clip.png"; }
+		{ String _name = "ExtensionsEntry_decal_fog_order";	String _source = "Sprite/Extensions/Entry_decal_fog_order.png"; }
 		{ String _name = "ExtensionsEntry_eye_camera";	String _source = "Sprite/Extensions/Entry_eye_camera.png"; }
 		{ String _name = "ExtensionsEntry_sharp_ui";	String _source = "Sprite/Extensions/Entry_sharp_ui.png"; }
 		{ String _name = "ExtensionsEntry_fast_paths";	String _source = "Sprite/Extensions/Entry_fast_paths.png"; }
@@ -65,6 +70,9 @@ SpriteSheet resource
 		{ String _name = "ExtensionsEntry_ambient_occlusion";	String _source = "Sprite/Extensions/Entry_ambient_occlusion.png"; }
 		{ String _name = "ExtensionsEntry_better_trees";	String _source = "Sprite/Extensions/Entry_better_trees.png"; }
 		{ String _name = "ExtensionsEntry_better_water";	String _source = "Sprite/Extensions/Entry_better_water.png"; }
+		{ String _name = "ExtensionsEntry_winter_ice";	String _source = "Sprite/Extensions/Entry_winter_ice.png"; }
+		{ String _name = "ExtensionsEntry_better_clouds";	String _source = "Sprite/Extensions/Entry_better_clouds.png"; }
+		{ String _name = "ExtensionsEntry_boat_lane";	String _source = "Sprite/Extensions/Entry_boat_lane.png"; }
 		{ String _name = "ExtensionsEntry_max_shadow_res";	String _source = "Sprite/Extensions/Entry_max_shadow_res.png"; }
 		{ String _name = "ExtensionsEntry_seamless_loops";	String _source = "Sprite/Extensions/Entry_seamless_loops.png"; }
 		{ String _name = "ExtensionsEntry_spread_warmth";	String _source = "Sprite/Extensions/Entry_spread_warmth.png"; }
@@ -74,12 +82,16 @@ SpriteSheet resource
 		{ String _name = "ExtensionsEntry_better_camera";	String _source = "Sprite/Extensions/Entry_better_camera.png"; }
 		{ String _name = "ExtensionsEntry_no_fog";	String _source = "Sprite/Extensions/Entry_no_fog.png"; }
 		{ String _name = "ExtensionsEntry_show_grid";	String _source = "Sprite/Extensions/Entry_show_grid.png"; }
+		{ String _name = "ExtensionsEntry_fps_counter";	String _source = "Sprite/Extensions/Entry_fps_counter.png"; }
+		{ String _name = "ExtensionsEntry_building_finder";	String _source = "Sprite/Extensions/Entry_building_finder.png"; }
 		{ String _name = "ExtensionsEntry_tool_names";	String _source = "Sprite/Extensions/Entry_tool_names.png"; }
 		{ String _name = "ExtensionsEntry_high_limits";	String _source = "Sprite/Extensions/Entry_high_limits.png"; }
 		{ String _name = "ExtensionsEntry_restricted_foods";	String _source = "Sprite/Extensions/Entry_restricted_foods.png"; }
 		{ String _name = "ExtensionsEntry_item_priority";	String _source = "Sprite/Extensions/Entry_item_priority.png"; }
 		{ String _name = "ExtensionsEntry_family_tree";	String _source = "Sprite/Extensions/Entry_family_tree.png"; }
+		{ String _name = "ExtensionsEntry_map_overlays";	String _source = "Sprite/Extensions/Entry_map_overlays.png"; }
 		{ String _name = "ExtensionsEntry_terrain_edit";	String _source = "Sprite/Extensions/Entry_terrain_edit.png"; }
+		{ String _name = "ExtensionsEntry_staggered_passes";	String _source = "Sprite/Extensions/Entry_staggered_passes.png"; }
 		{ String _name = "ExtensionsGlyph_town_screenshot_view";	String _source = "Sprite/Extensions/Glyph_town_screenshot_view.png"; }
 		{ String _name = "ExtensionsGlyph_town_screenshot_take";	String _source = "Sprite/Extensions/Glyph_town_screenshot_take.png"; }
 		{ String _name = "ExtensionsGlyph_terrain_raise";	String _source = "Sprite/Extensions/Glyph_terrain_raise.png"; }
@@ -128,5 +140,6 @@ SpriteSheet resource
 		{ String _name = "TreeGap";	String _source = "Sprite/Extensions/TreeGap.png"; }
 		{ String _name = "TreeGapStem";	String _source = "Sprite/Extensions/TreeGapStem.png"; }
 		{ String _name = "GameFilesIcon";		String _source = "Sprite/Extensions/GameFilesIcon.png"; }	// ext.phone_menu's Game files menu button (issue #96)
+		{ String _name = "ExtensionsEntry_fullscreen_mode";	String _source = "Sprite/Extensions/Entry_fullscreen_mode.png"; }
 	]
 }

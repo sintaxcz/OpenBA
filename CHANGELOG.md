@@ -54,13 +54,24 @@ Headings are `## vX.Y.Z (YYYY-MM-DD)`; the version is the CMake `VERSION` in `CM
   No file manager access to `Android/data` is needed any more.
 - "Game files": a button in the main and pause menus (and the app icon's long-press shortcut) opens the same
   screen at any time to export the saves to a `.zip` or import them from one (`docs/android/README.md`).
+- Typing (issue #100): tapping a text box (the village name and the map seed of a new game, a save's name)
+  opens the screen keyboard, and its keys type into the box. Return or the system's Back closes the keyboard and
+  ends the edit, as Enter does on a PC; what the game's own US keyboard table has is what can be typed.
 
 **Fixes**
+- Mods during a game (issue #100): the pause menu's Mods button works again, and so does Extensions beside it. It
+  first asks whether to go on: a change reloads the town, and turning off a mod the town uses (one that adds
+  buildings, resources or items) can damage it, so save first. A change made in a game is now kept, where the
+  original game quietly brought back the old mod list at the next main menu (`fix.mods_persist`).
 - `fix.ui_scale_layout` (on): the building's name shown while placing it now sits by the ghost on a touch
   screen. Retail scales that label's position by the UI scale twice, so at any scale but 100 % it floated far
   from the building (`docs/retail_bugs.md` section 5; issue #96).
 - `ext.phone_menu` and the Enhanced tab keep their scroll bar when a mod replaces the Options page with one that
   has none (the North 7 mod hid the UI-scale slider and everything below it; issue #96).
+- `fix.debug_spawn_origin` (on): the debug panel's "spawn citizens" button (a debug-menu mod such as
+  MegaMod) no longer freezes the game in a town whose storage has no place to put new citizens (only
+  stockpiles). Retail kept looking for one for ever; the new citizens now appear on free land near the
+  middle of the map (`docs/retail_bugs.md` section 29). Off under `/profile:faithful`.
 - `fix.stranded_wade` (on): a citizen stuck on land cut off from the town (he crossed a stream where it
   touches a mountain or shore, or a builder was left on a finished dock or bridge piece) no longer stands
   there "going somewhere to get warm" until he starves. Once a walk of his toward home was refused because
@@ -153,6 +164,10 @@ Headings are `## vX.Y.Z (YYYY-MM-DD)`; the version is the CMake `VERSION` in `CM
 - A crash in large towns at high game speed (`ext.render_culling`): a citizen or building removed while
   offscreen no longer leaves entries behind that the next frame without a game tick writes through. Seen
   after 7.8 hours in a 1588-citizen town (`docs/known_port_issues.md` row 1346).
+- A crash after upgrading or demolishing buildings (the game stops with "pure virtual call" while it draws
+  the frame): a removed building's status icon could be put back on the screen after the building was
+  gone. The icon's removal now empties its flags as retail does, so a later change to them no longer
+  brings it back. Seen in a MegaMod X game about two hours in (`docs/known_port_issues.md` row 1350).
 - Render thread (`ext.render_pipe`): no more long lines flickering across the screen, and no more crash of
   the render thread, most often seen while placing a building with a radius circle (a well, a market)
   and moving the camera. The frame copy the render thread draws from wrote two parts of itself over each

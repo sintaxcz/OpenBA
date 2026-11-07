@@ -19,6 +19,7 @@
 #include "ext/family_tree/family_tree.h"
 #include "graphics/Scene.h"
 #include "Component/StorageComponent.h"   // B.3.8 CB1a (TypeId)
+#include "ext/map_overlays/map_overlays.h"   // EXT SEAM (NOT RETAIL, docs/extensions/handins/MAPOVERLAYS.md): ext.map_overlays
 // EXT SEAM (NOT RETAIL, docs/extensions/handins/RESTRICTEDFOODS.md): ext.restricted_foods
 // (class C), Ext::RestrictedFoods::g_on, Ext::RestrictedFoods::IsBlocked
 #include "ext/restricted_foods/restricted_foods.h"
@@ -285,7 +286,7 @@ void CitizenComponent::Update(const System::Time* timeArg) {
         coldness = 0.0f;
     } else {
         // Thirst rate depends on clothing level (field at +0x1E4)
-        float thirstRate = desc->coldRate[clothingLevel];
+        float thirstRate = CitizenColdRate(desc->coldRate, clothingLevel);
         coldness += (dt_sec * thirstRate) / fVar14;
     }
 
@@ -293,7 +294,9 @@ void CitizenComponent::Update(const System::Time* timeArg) {
     Profession* profRef = pendingProfession;
     if (profRef != nullptr) {
         // Build UI::String from profession name, convert to System::String
-        uint8_t localStr[16] = {};
+        // NOT RETAIL (review F-064, undefined behaviour): placement new of a UI::String needs
+        // its 8-byte alignment; retail's local was typed.
+        alignas(UI::String) uint8_t localStr[16] = {};
         UI::String* uiName = ::new (localStr) UI::String(
             Object::ExternalPtr<UI::StringTable>(profRef->stringTable),
             profRef->stringTool);
@@ -1403,6 +1406,7 @@ void CitizenComponent::EatFrom(ComponentEntity* target) {
     // the tree's hand-written grow, read by its three fields.
     float uv = kRdata_14017214c;
     float hours = hunger;
+    const bool mapOverlays = Ext::MapOverlays::g_on;   // ext.map_overlays: tested once, above the loop
     do {
         if (hours <= 0.0f) return;
         ComponentEntity* arg = target;
@@ -1442,6 +1446,10 @@ void CitizenComponent::EatFrom(ComponentEntity* target) {
         // consumed counter (townMgr = *(gameWorld+0xf0), counters at +0x170,
         // 0x20-byte stride, count at +0xC: CitizenBehavior::professionResources).
         store->SubtractItem(work, 1);   // 0x14012d150
+        if (mapOverlays) {
+            // ext.map_overlays: one food eaten, at the home (or the storage eaten from)
+            Ext::MapOverlays::OnConsumedAt(work, entity, 1);
+        }
         CitizenBehavior* worldGrid = GameUpdateLoop::_singleton->m_citizenList;
         {
             uint32_t idx = ResourceCategory(work);   // 0x140088f90 (its first argument, the storage, is never read)

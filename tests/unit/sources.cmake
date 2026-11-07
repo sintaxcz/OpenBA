@@ -21,6 +21,7 @@ set(UNIT_TREE_SRCS
   ${CMAKE_SOURCE_DIR}/src/engine/object/expand_memo.cpp   # block SAVELOAD: the ExpandRelativePath memo
   ${CMAKE_SOURCE_DIR}/src/engine/collection/array.cpp
   ${CMAKE_SOURCE_DIR}/src/engine/collection/array_destroy.cpp
+  ${CMAKE_SOURCE_DIR}/src/engine/collection/array_graphics_anim.cpp   # review_engine_ub_test.cpp (F-049): kSpec_MeshNode; review_graphics_anim_test.cpp: Array<Layer> / <Instance>
   ${CMAKE_SOURCE_DIR}/src/engine/collection/linkedlist.cpp
   ${CMAKE_SOURCE_DIR}/src/engine/collection/introsort.cpp
   ${CMAKE_SOURCE_DIR}/src/engine/object/type_reflection.cpp
@@ -29,7 +30,16 @@ set(UNIT_TREE_SRCS
   ${CMAKE_SOURCE_DIR}/src/engine/io/serializer_class.cpp
   ${CMAKE_SOURCE_DIR}/src/engine/io/serialize_family.cpp       # decode_exact_test.cpp (issue #13): the reader's array slots
   ${CMAKE_SOURCE_DIR}/src/engine/io/compressed_stream_read.cpp #   CompressedStream::Read / SetWindow / ReadArray
+  ${CMAKE_SOURCE_DIR}/src/engine/io/compressed_stream_open.cpp # package_file_read_test.cpp, compressed_stream_bounds_test.cpp: Open
+  ${CMAKE_SOURCE_DIR}/src/engine/io/memory_stream.cpp         #   the MemoryStream it opens over
+  ${CMAKE_SOURCE_DIR}/src/engine/io/package_file_read.cpp     #   PackageFile::ReadPackfile (FileSystem faked in the test)
   ${CMAKE_SOURCE_DIR}/src/engine/system/compression.cpp        #   Compress / Decompress
+  ${CMAKE_SOURCE_DIR}/src/engine/io/text_codec.cpp             # string_codec_hardening_test.cpp: the codecs, RtIo_SerializeStringArray
+  ${CMAKE_SOURCE_DIR}/src/engine/save/saveload_loadmeta.cpp    # save_metadata_hardening_test.cpp: LoadMetaData and its stream stack
+  ${CMAKE_SOURCE_DIR}/src/engine/io/compressedstream.cpp        #   (memory_stream.cpp / compressed_stream_open.cpp: above)
+  ${CMAKE_SOURCE_DIR}/src/engine/io/compressed_stream_write.cpp
+  ${CMAKE_SOURCE_DIR}/src/engine/io/compressed_stream_release.cpp
+  ${CMAKE_SOURCE_DIR}/src/engine/io/encoding.cpp               #   BinaryEncoding::CreateReader
   ${CMAKE_SOURCE_DIR}/src/engine/system/crc.cpp
   ${CMAKE_SOURCE_DIR}/src/engine/picking/picking_type_records.cpp
   ${CMAKE_SOURCE_DIR}/src/engine/pathfinding/pathfinding_type_records.cpp
@@ -37,6 +47,7 @@ set(UNIT_TREE_SRCS
   ${CMAKE_SOURCE_DIR}/src/engine/audio/audio_type_records.cpp
   ${CMAKE_SOURCE_DIR}/src/engine/collision2d/collision2d_type_records.cpp
   ${CMAKE_SOURCE_DIR}/src/engine/achievement/achievement_type_records.cpp
+  ${CMAKE_SOURCE_DIR}/src/engine/achievement/achievement_update.cpp   # achievement_update_bounds_test.cpp (review F-092..F-094)
   ${CMAKE_SOURCE_DIR}/src/engine/video/video_type_records.cpp
   ${CMAKE_SOURCE_DIR}/src/engine/graphics/graphics_type_records.cpp
   ${CMAKE_SOURCE_DIR}/src/engine/object/root_operator_delete.cpp
@@ -64,6 +75,8 @@ set(UNIT_TREE_SRCS
   ${CMAKE_SOURCE_DIR}/src/ext/package_cache/index_codec.cpp      # ext_package_cache_test.cpp (PKGCACHE)
   ${CMAKE_SOURCE_DIR}/src/ext/menu_entry/fingerprint.cpp         # ext_menu_entry_test.cpp (MENUENTRY)
   ${CMAKE_SOURCE_DIR}/src/ext/sharp_ui/sharp_math.cpp
+  ${CMAKE_SOURCE_DIR}/src/ext/sharp_ui/sharp_sheet.cpp   # ext_sharp_sheet_test.cpp (SHARP_SPRITES)
+  ${CMAKE_SOURCE_DIR}/src/ext/sharp_ui/sharp_encode.cpp  # ext_sharp_encode_test.cpp (SHARP_SPRITES: the BC3 mip chain)
   ${CMAKE_SOURCE_DIR}/src/ext/phone_menu/phone_math.cpp   # ext_phone_menu_test.cpp (PHONEMENU)
   ${CMAKE_SOURCE_DIR}/src/ext/phone_menu/touch_math.cpp   # ext_phone_touch_test.cpp (PHONEMENU, P9)
   ${CMAKE_SOURCE_DIR}/src/ext/phone_menu/size_math.cpp    # ext_phone_size_test.cpp (PHONEMENU, P11)
@@ -77,9 +90,13 @@ set(UNIT_TREE_SRCS
   ${CMAKE_SOURCE_DIR}/src/ext/ambient_occlusion/ao_math.cpp   # ext_ambient_occlusion_test.cpp (block AOCORE)
   ${CMAKE_SOURCE_DIR}/src/ext/seamless_loops/seamless_loops.cpp   # ext_seamless_loops_test.cpp (block SEAMLESS)
   ${CMAKE_SOURCE_DIR}/src/ext/better_water/shore_strip.cpp   # ext_better_water_test.cpp (block BETTERWATER, Fancy)
+  ${CMAKE_SOURCE_DIR}/src/ext/better_clouds/cloud_params.cpp   # ext_better_clouds_test.cpp (BETTERCLOUDS)
+  ${CMAKE_SOURCE_DIR}/src/ext/better_clouds/cloud_noise.cpp    #   the noise texture
+  ${CMAKE_SOURCE_DIR}/src/ext/better_clouds/sky_fit.cpp        #   the program fit test
   ${CMAKE_SOURCE_DIR}/src/ext/high_limits/high_limits.cpp             # ext_high_limits_test.cpp (HIGHLIMITS)
   ${CMAKE_SOURCE_DIR}/src/ext/restricted_foods/restricted_foods.cpp            # ext_restricted_foods_test.cpp (RESTRICTEDFOODS)
   ${CMAKE_SOURCE_DIR}/src/ext/restricted_foods/save_state.cpp             #   its class C codec
+  ${CMAKE_SOURCE_DIR}/src/ext/map_overlays/overlay_math.cpp               # ext_map_overlays_math_test.cpp (MAPOVERLAYS)
   ${CMAKE_SOURCE_DIR}/src/ext/toolbar/toolbar.cpp                    # ext_toolbar_test.cpp (the page list; the page is stubbed there)
   ${CMAKE_SOURCE_DIR}/src/ext/item_priority/item_priority.cpp         # ext_item_priority_test.cpp (ITEMPRIO)
   ${CMAKE_SOURCE_DIR}/src/ext/item_priority/save_state.cpp            #   its class C codec
@@ -93,6 +110,9 @@ set(UNIT_TREE_SRCS
   ${CMAKE_SOURCE_DIR}/src/ext/family_tree/family_summary.cpp         # ext_family_tree_test.cpp (the town summary)
   ${CMAKE_SOURCE_DIR}/src/ext/family_tree/family_picture.cpp         # ext_family_tree_test.cpp (the whole-town picture)
   ${CMAKE_SOURCE_DIR}/src/ext/family_tree/family_raster.cpp          #   the same picture as pixels (PNG)
+  ${CMAKE_SOURCE_DIR}/src/ext/family_tree/family_tree_town.cpp       # ext_family_tree_town_test.cpp
+  ${CMAKE_SOURCE_DIR}/src/ext/map_overlays/overlay_core.cpp          # ext_map_overlays_test.cpp (MAPOVERLAYS): the history
+  ${CMAKE_SOURCE_DIR}/src/ext/map_overlays/save_state.cpp            #   its class C codec and Town()
   ${CMAKE_SOURCE_DIR}/src/ext/drain_split/drain_split.cpp         # ext_drain_split_test.cpp (HITCH_DRAINSPLIT)
   ${CMAKE_SOURCE_DIR}/src/render/common/better_trees/dxbc.cpp            # ext_better_trees_test.cpp (block FAA-CORE)
   ${CMAKE_SOURCE_DIR}/src/render/common/better_trees/cutout_rewrite.cpp
@@ -101,7 +121,7 @@ set(UNIT_TREE_SRCS
   ${CMAKE_SOURCE_DIR}/src/render/common/better_trees/natural_growth.cpp     # ext_natural_growth_test.cpp (NATURAL_GROWTH.md)
   ${CMAKE_SOURCE_DIR}/src/ext/better_trees/leaf_fall.cpp                    # ext_natural_growth_test.cpp (NATURAL_GROWTH.md section 7)
   ${CMAKE_SOURCE_DIR}/src/render/common/better_trees/blossom.cpp            # ext_natural_growth_test.cpp (BLOSSOM.md)
-  ${CMAKE_SOURCE_DIR}/src/ext/fast_paths/fast_search.cpp
+  ${CMAKE_SOURCE_DIR}/src/game/Action/grid_search.cpp
   ${CMAKE_SOURCE_DIR}/src/game/Action/action_pf_region_search.cpp
   ${CMAKE_SOURCE_DIR}/src/game/Game/worldgen_f390_erosion.cpp   # worldgen_erosion_test.cpp (block EROSION)
   ${CMAKE_SOURCE_DIR}/src/ext/path_workers/pool.cpp
@@ -109,6 +129,7 @@ set(UNIT_TREE_SRCS
   ${CMAKE_SOURCE_DIR}/src/ext/draw_gather/gather_side.cpp
   ${CMAKE_SOURCE_DIR}/src/ext/draw_batch/batch_fill.cpp   # ext_draw_batch_test.cpp (DRAWBATCH)
   ${CMAKE_SOURCE_DIR}/src/render/common/draw_batch/smoke_vs_rewrite.cpp   # ext_draw_batch_test.cpp (DRAWBATCH, Idea B)
+  ${CMAKE_SOURCE_DIR}/src/render/common/decal_fog/decal_fog_rewrite.cpp   # ext_decal_fog_test.cpp (fix.decal_fog_order)
   ${CMAKE_SOURCE_DIR}/src/ext/gather_threads/gather_threads.cpp
   ${CMAKE_SOURCE_DIR}/src/diag/diag_threads.cpp   # gather_threads.cpp registers its helpers (block LOADSTAMP)
   ${CMAKE_SOURCE_DIR}/src/platform/win/settings_win.cpp
@@ -137,7 +158,9 @@ set(UNIT_TREE_SRCS
   ${CMAKE_SOURCE_DIR}/src/platform/common/cursor_planes.cpp
   ${CMAKE_SOURCE_DIR}/src/platform/common/open_url.cpp
   ${CMAKE_SOURCE_DIR}/src/engine/audio/xwma_decode.cpp
+  ${CMAKE_SOURCE_DIR}/src/engine/audio/soundbuffer_platform_serialize.cpp   # audio_sizes_test.cpp
   ${CMAKE_SOURCE_DIR}/src/engine/audio/load_decode_batch.cpp   # block SNDPAR: the load's decode batch
+  ${CMAKE_SOURCE_DIR}/src/engine/audio/audio_device_buffer_deleted.cpp   # stream_free_wait_test.cpp (review S-027)
   ${CMAKE_SOURCE_DIR}/src/engine/system/parallel_for.cpp   # block WGPAR: the fork-join pool
   ${CMAKE_SOURCE_DIR}/src/platform/common/cpu/topology.cpp             # parallel_for.cpp sizes its pool from Cpu::Get()
   ${CMAKE_SOURCE_DIR}/src/platform/win/cpu_win.cpp
@@ -149,6 +172,7 @@ set(UNIT_TREE_SRCS
   ${CMAKE_SOURCE_DIR}/src/game/Game/mapquery.cpp                  # still_terrain_test.cpp: the real Map::GetTerrainPos
   ${CMAKE_SOURCE_DIR}/src/game/Game/worldgeometry_ray.cpp          # its height: the terrain ray cast (terrain_ray_test.cpp)
   ${CMAKE_SOURCE_DIR}/src/game/Game/maparea.cpp                   # clear_area_road_test.cpp: Map::IsGroundClear / IsAreaEmpty
+  ${CMAKE_SOURCE_DIR}/src/game/Game/serialize_struct60b.cpp       # geometry_batch_raw_byte_test.cpp: the GeometryBatch ctors (F-008)
   ${CMAKE_SOURCE_DIR}/src/engine/collection/set_core.cpp          # set_ported_test.cpp: the four ported AVL cores
   ${CMAKE_SOURCE_DIR}/src/engine/collection/set_avl.cpp           #   element 0x10 (0x18000adc0 / aba0)
   ${CMAKE_SOURCE_DIR}/src/engine/collection/set_avl_e24.cpp       #   element 0x18 (0x180023170)
@@ -157,6 +181,8 @@ set(UNIT_TREE_SRCS
   ${CMAKE_SOURCE_DIR}/src/engine/io/modification_avl8.cpp         #   element 8    (0x1800274c0)
   ${CMAKE_SOURCE_DIR}/src/engine/system/value_types.cpp           # random_test.cpp: the real System::Random (MT19937); the erosion tests draw from it too
   ${CMAKE_SOURCE_DIR}/src/engine/system/timer.cpp                 #   value_types.cpp's System::Time bodies call Timer::SecondsToTicks
+  ${CMAKE_SOURCE_DIR}/src/engine/graphics/animationstate.cpp         # review_graphics_anim_test.cpp (F-098, F-121)
+  ${CMAKE_SOURCE_DIR}/src/engine/graphics/wave29_lane_gfxbody.cpp    #   Animation::GetRootPoseAtTime
   ${CMAKE_SOURCE_DIR}/src/engine/io/filename_extension.cpp        # filename_test.cpp: the real Filename::GetPathExtension body
   # ext_sheet_builder_test.cpp (block RSCSPRITE, KITFREE.md): the packer and the SpriteSheet fill.
   # (The ported writer family cannot join the host build: ui_resources_abi_test.cpp and
@@ -164,4 +190,19 @@ set(UNIT_TREE_SRCS
   # as slot probes; the test mirrors the record format and the exe logs the real writer's CRC.)
   ${CMAKE_SOURCE_DIR}/src/ext/resources/sheet_builder.cpp
   ${CMAKE_SOURCE_DIR}/src/engine/ui/sprite.cpp                     #   AddSpriteInfo / SetSpriteInfo
+  # ui_engine_review_test.cpp: UpdateEvents / CleanRemovedDialogs / Play, ComboElement::UpdateText,
+  # DocumentTextElement::GetNextItem (the bodies they call but do not own: ui_engine_review_stubs.cpp)
+  ${CMAKE_SOURCE_DIR}/src/engine/ui/userinterface.cpp
+  ${CMAKE_SOURCE_DIR}/src/engine/ui/widgets_input.cpp
+  ${CMAKE_SOURCE_DIR}/src/engine/ui/documenttext.cpp
+  ${CMAKE_SOURCE_DIR}/src/engine/ui/combodialog_close.cpp        # combodialog_close_test.cpp (review S-035)
+  ${CMAKE_SOURCE_DIR}/src/game/Dialog/eventnotify_remove.cpp      # eventnotify_remove_test.cpp: the ribbon entry removal (0x140011670)
+  ${CMAKE_SOURCE_DIR}/src/game/Dialog/statusbarui.cpp             # statusbar_icon_race_test.cpp (review S-006)
 )
+if(WIN32)
+  # The Windows-only diagnostics a test reaches (src/diag/win is never built off Windows).
+  list(APPEND UNIT_TREE_SRCS
+    ${CMAKE_SOURCE_DIR}/src/diag/win/hw_watch.cpp   # hw_watch_arm_test.cpp (review F-280, F-286)
+    ${CMAKE_SOURCE_DIR}/src/diag/win/thread_stack.cpp   # thread_stack_test.cpp (review F-275, F-288, F-291, F-297)
+  )
+endif()

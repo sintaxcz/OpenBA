@@ -12,6 +12,7 @@
 #include "object/TypeInfo.h"
 #include "Game/GameUpdateLoop.h"   // B3R STORAGE: GameUpdateLoop::_singleton
 #include "Action/exe_bodies.h"            // CheckCellTerrain, NaturalResourcePlaceAtCell, SetGrowthProgress, ModelMesh*
+#include "Action/saved_bounds.h"   // ActionBounds::IsMapCell (review S-005)
 #include "Game/Map.h"
 #include "Entity/EntityList.h"
 #include "Component/ComponentDescription.h"
@@ -63,8 +64,8 @@ void CreateNaturalResource::Persist(IO::Stream& stream) {
     int version = ser.GetVersion();
     if (version > 0) {
         parentEntity.InternalBasePtr::Serialize(ser);
-        if (parentEntity.Get() != nullptr) {
-            if (!::Object::IsDerivedFromNullSafe(parentEntity.Get(), ComponentEntity::TypeId())) {
+        if (!parentEntity.IsNull()) {
+            if (!::Object::IsDerivedFromNullSafe(parentEntity, ComponentEntity::TypeId())) {
                 parentEntity = nullptr;
             }
         }
@@ -100,6 +101,13 @@ int  CreateNaturalResource::AbstractImpl(ActionStack* actionStack) {
         }                                                                           \
         return 2;                                                                   \
     } while (0)
+
+    // NOT RETAIL (review S-005): cellIndex comes from the save (Persist +0x30); retail
+    // 0x1400c6650 indexes Map::cells with it unbounded (MOVSXD R8,[R14+0x30], no compare
+    // with the cell count). An index off the map fails the action (2) before the first read.
+    if (!ActionBounds::IsMapCell(cellIndex, map->cells.GetSize())) {
+        return 2;
+    }
 
     // Check if the cell already has an entity at the structure slot (+8)
     if (cells[cellIndex].occupant != nullptr) {

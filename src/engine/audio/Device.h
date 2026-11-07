@@ -97,6 +97,17 @@ public:
         uint32_t     userValue;   // +0x18  3rd callback argument (a handle tag)
         uint32_t     _pad1c;      // +0x1c  never written
         Callback     onComplete;  // +0x20  fired by the reap epilogue
+
+        // NOT RETAIL (review F-138): every access to `flags` goes through these.
+        // The backend's audio thread sets bit 1 (PlatformChannel::OnStreamEnd)
+        // while the main thread tests, sets and clears bits in Update, Stop,
+        // StopPlatform, OnSoundBufferDeleted and Scene::Update. Retail uses plain
+        // `TEST` / `OR` / `AND` with no lock: a data race, and a plain `|= 1` racing
+        // the callback's `|= 2` could lose a bit. Same values and the same order;
+        // the RMWs are atomic and the test is an acquire load.
+        uint32_t LoadFlags() const { return __atomic_load_n(&flags, __ATOMIC_ACQUIRE); }
+        void OrFlags(uint32_t bits) { __atomic_fetch_or(&flags, bits, __ATOMIC_ACQ_REL); }
+        void AndFlags(uint32_t mask) { __atomic_fetch_and(&flags, mask, __ATOMIC_ACQ_REL); }
     };
 
     // ------------------------------------------------------------------------
@@ -164,6 +175,11 @@ public:
     // Its minted storage row is RETIRED (ENDGAME B.3.9 ENG W2: no reader was
     // left but the redirect). PUBLIC: foreign files read it directly.
     static Device* _singleton;
+    // FIX SEAM (fix.stream_free_wait, NOT RETAIL; DESIGN.md hook rule 5): null by default, the
+    // game side points it at the fix's bool. While it reads true, OnSoundBufferDeleted waits for
+    // the stream worker's pass over a streamed buffer before the buffer is freed (review S-027).
+    // src/engine never includes src/ext. Defined in audio_device_buffer_deleted.cpp.
+    static const bool* _extFixStreamFreeWait;
     void SetChannelVolume(AudioChannel* channel, float volume);                    // 0x1800de1b0
     AudioChannel* Play(Object::ExternalPtr<SoundBuffer> buffer, const System::Time& start,
                        float volume, float pitch, float unused, Callback onComplete,

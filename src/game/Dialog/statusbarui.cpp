@@ -45,6 +45,7 @@
 #include "Game/WeatherSimulation.h"
 #include "Game/PlayerToolManager.h"
 #include "system/MemoryAllocator.h"   // B3R: the allocator doors
+#include "ext/registry.h"              // Ext::Fix().statusbar_empty_town
 
 // CitizenUI_UpdateIconDisplay_Impl is in the shared header Dialog/citizen_icon_helpers.h;
 // the icon group's Init (0x14006abf0) is TownHall_GroupRatingInit (Dialog/RatingGroup.h).
@@ -102,7 +103,7 @@ void StatusBarUI::OnOpened() {
 
     // --- Custom resource counters (numberCustom0..9) ---
     for (int i = 0; i < 10; i++) {
-        System::String fmtStr = System::String::Format("numberCustom%i", (uint64_t)i);
+        System::String fmtStr = System::String::Format("numberCustom%i", (int)i);
         numberCustom[i] = FindNamed<UI::NumberElement>(this, fmtStr);
     }
 
@@ -264,7 +265,7 @@ void StatusBarUI::OnUpdateLayout() {
         statusNumbers[k]->SetFlagsOnOff(hideFlag, showFlag);
 
         // Set count text as parameter 0
-        System::String countStr = System::String::Format("%i", (uint64_t)statusCounts[k]);
+        System::String countStr = System::String::Format("%i", (int)statusCounts[k]);
         statusNumbers[k]->SetParameter(0, countStr);
 
         mask = (mask << 1) | (uint32_t)((int32_t)mask < 0);  // rotate left
@@ -272,15 +273,15 @@ void StatusBarUI::OnUpdateLayout() {
 
     // --- Update population text (3 params: adults, students, children) ---
     {
-        System::String str = System::String::Format("%i", (uint64_t)adultCount);
+        System::String str = System::String::Format("%i", (int)adultCount);
         textPopulation->SetParameter(0, str);
     }
     {
-        System::String str = System::String::Format("%i", (uint64_t)studentCount);
+        System::String str = System::String::Format("%i", (int)studentCount);
         textPopulation->SetParameter(1, str);
     }
     {
-        System::String str = System::String::Format("%i", (uint64_t)childCount);
+        System::String str = System::String::Format("%i", (int)childCount);
         textPopulation->SetParameter(2, str);
     }
 
@@ -294,7 +295,7 @@ void StatusBarUI::OnUpdateLayout() {
     if ((int)monthIdx > 11) monthIdx = 0;
 
     {
-        System::String monthKey = System::String::Format("Month%i", (uint64_t)monthIdx);
+        System::String monthKey = System::String::Format("Month%i", (int)monthIdx);
 
         // A UI::String of textSeason's own string table (+0xd8) and the key, then
         // SetText. B7 LX (row 994 G30): retail 0x1400798d0 tests neither textSeason
@@ -397,6 +398,14 @@ static void StatusBarUI_StatusIconHandler_Impl(StatusBarUI* self, uint8_t iconIn
     // The town's citizens (no test of the town or of the count: 0x14007a120)
     const CitizenBehavior* town = game->m_citizenList;
     const int citizenCount = town->citizens._size;
+    // FIX statusbar_empty_town (review S-006, NOT RETAIL): retail 0x14007a120 has no count test.
+    // A click queued in frame N is dispatched in frame N+1 by UpdateEvents, after that frame's
+    // sim tick; when the tick removed the last citizen, the walk below wraps the index to 0 and
+    // reads citizens._data[0] past _size: the removed citizen, freed in retail by the same
+    // frame's EntityList drain (use after free), and in the port centred on as it dies. With the
+    // row on, a click in a town with no citizen does nothing.
+    if (Ext::Fix().statusbar_empty_town && citizenCount <= 0)
+        return;
     const uint32_t bitMask = 1u << (iconIndex & 0x1F);
     int checked = 0;
 

@@ -39,6 +39,7 @@
 #include "system/String.h"
 #include "collection/Collection.h"
 #include "options.h"
+#include "clamped_atoi.h"     // review F-087: atoi on BANISHED_* text
 #include "Game/terrain_sidecar.h"
 #include "object/External.h"   // ENDGAME B.3.3 step 6A
 #include "Component/pickingcomponent_funcs.h"   // PickingComponent_RegisterMesh (mesh-precise picking)
@@ -297,11 +298,6 @@ extern "C" void StartTown_RegisterRuntimeBuilding(ComponentEntity* entity) {
     StartTown_PickMeshProbe(entity);
 }
 
-
-// WorkPlaceComponent attach/detach roster-only mode (workplacecomponent.cpp). Set true for
-// the build-time founding-housing pass so the roster is populated WITHOUT the gameplay-time
-// Scene mesh-visual toggle (which deadlocks mid-build). See the flag's definition.
-extern bool g_wpcRosterOnly;
 
 // Apply the occupied end-state visual for a rostered house (ModelKick mode 2 + StatusIcon
 // toggle). MUST run at gameplay time (live scene). See its definition in workplacecomponent.cpp.
@@ -851,7 +847,7 @@ static int BuildDemoIndex() {
         // A start-town building is force-completed into the demo only when an
         // explicit index (>=0) is requested. (Old default 0 seeded the StorageBarn, which
         // had no haul source anyway.)
-        idx = (e && e[0]) ? std::atoi(e) : -1;
+        idx = (e && e[0]) ? ClampedAtoi(e) : -1;
     }
     return idx;
 }
@@ -1335,9 +1331,10 @@ static int StartTown_StressSpawnStructures(MapGenerator* startConfig, Map* game,
         }
         return false;
     };
-    // Free ring kept around every footprint: the 1-tile walk lane, or a wider one in the
-    // showroom so each building is framed without its neighbours in the shot.
-    const int margin = showroom ? 4 : 1;
+    // Free ring kept around every footprint: the 1-tile walk lane, or a wider one for the
+    // showroom's buildings (set below, after the stress town is placed, so a stress town
+    // under the showroom keeps its own layout) so each is framed without its neighbours.
+    int margin = 1;
     auto fits = [&](int tx, int ty, int w, int h, int doorDx, int doorDy) -> bool {
         const int edge = margin + 1;
         if (tx < edge || ty < edge || tx + w > mapW - edge || ty + h > mapW - edge) return false;
@@ -1511,6 +1508,7 @@ static int StartTown_StressSpawnStructures(MapGenerator* startConfig, Map* game,
         // out of the shots (the spread layout's anchor rule).
         anchorX = std::max(12, std::min(mapW - 12, cx + mapW / 4));
         anchorY = cy;
+        margin = 4;
         const uint32_t tidModel = ModelComponent::TypeId();
         for (int i = 0; i < Showroom_Count(); ++i) {
             if (Showroom_IsTree(i)) continue;   // planted in the grid below
@@ -1646,6 +1644,196 @@ static int StartTown_StressSpawnStructures(MapGenerator* startConfig, Map* game,
                 const ModelComponent* model = FindComponentOnEntity<ModelComponent>(ent, tidModel);
                 const float* bounds = model ? &model->meshInstance._worldBounds.min.x : nullptr;
                 Showroom_NotePlaced(i, true, x, y, 1, 1, mapW, bounds, nullptr);
+            }
+        }
+
+        // The forest ("forest <species|mixed> <columns> <rows> <spacing>", issue #253's bench
+        // view): a grid of fully grown trees planted as the "tree" lines are, but with the world-gen
+        // jitter and yaw from a harness-local rng (seeded, so a run repeats; the world rng is not
+        // drawn). Sited on the origin with the fewest unusable tree cells (water, unworkable, a
+        // building or its kForestRing ring; the nearest to the anchor on a tie), at most 1 in
+        // kForestHoleDiv; unusable cells stay bare, as clearings and streams do in a real forest.
+        // When no origin passes, the grid shrinks by a tenth a side and the search runs again.
+        const char* forestSpecies = nullptr;
+        int forestCols = 0;
+        int forestRows = 0;
+        int forestStep = 0;
+        if (Showroom_Forest(&forestSpecies, &forestCols, &forestRows, &forestStep)) {
+            const double forestT0 = StressNowMs();
+            constexpr int kForestRing = 2;         // tiles kept clear of buildings and their claims
+            constexpr int kForestEdge = 4;         // tiles kept off the map edge
+            constexpr int kForestSearchStep = 4;   // origin search stride, tiles
+            constexpr int kForestHoleDiv = 4;      // at most 1 in kForestHoleDiv tree cells may be unusable
+            constexpr uint32_t kForestSeed = 0x253u;
+            const std::string wanted = forestSpecies;
+            std::vector<std::string> kinds;
+            if (wanted == "mixed") {
+                kinds = { "oak", "birch", "pine" };
+            } else {
+                kinds = { wanted };
+            }
+            struct ForestKind {
+                std::string species;
+                ComponentDescription* tmpl;
+                int group;
+                int index;
+                int planted;
+            };
+            std::vector<ForestKind> resolved;
+            for (const std::string& species : kinds) {
+                ForestKind kind = { species, nullptr, 0, 0, 0 };
+                std::string meshText;
+                kind.tmpl = ShowroomResolveTree(startConfig, species, &kind.group, &kind.index, &meshText);
+                if (kind.tmpl) {
+                    resolved.push_back(kind);
+                    fprintf(stderr, "[Showroom] forest species %s -> %s mesh=(%d,%d) %s\n", species.c_str(),
+                            ShowroomLowerPath(kind.tmpl).c_str(), kind.group, kind.index, meshText.c_str());
+                }
+            }
+            const MapCell* mapCells = game->cells.GetData();
+            // Cells within kForestRing of a footprint or a cell already claimed (founding town,
+            // stress town, showroom buildings and trees).
+            std::vector<uint8_t> nearStructure(cells, 0);
+            for (int y = 0; y < mapW; ++y) {
+                for (int x = 0; x < mapW; ++x) {
+                    const size_t cell = (size_t)y * mapW + x;
+                    if (!occ[cell] && !mapCells[cell].occupant && !mapCells[cell].blocker) continue;
+                    const int yy0 = std::max(0, y - kForestRing);
+                    const int yy1 = std::min(mapW - 1, y + kForestRing);
+                    const int xx0 = std::max(0, x - kForestRing);
+                    const int xx1 = std::min(mapW - 1, x + kForestRing);
+                    for (int yy = yy0; yy <= yy1; ++yy) {
+                        for (int xx = xx0; xx <= xx1; ++xx) {
+                            nearStructure[(size_t)yy * mapW + xx] = 1;
+                        }
+                    }
+                }
+            }
+            auto forestCellFree = [&](int x, int y) -> bool {
+                const int cell = y * mapW + x;
+                if (nearStructure[(size_t)cell]) return false;
+                if (!cellWalkable(cell)) return false;   // the cell's own kind: water is refused
+                return cellWorkable(cell);
+            };
+            int cols = forestCols;
+            int rows = forestRows;
+            bool found = false;
+            int originX = 0;
+            int originY = 0;
+            while (!resolved.empty() && !found) {
+                const int spanX = (cols - 1) * forestStep + 1;
+                const int spanY = (rows - 1) * forestStep + 1;
+                const int budget = cols * rows / kForestHoleDiv;
+                const int baseX = anchorX - spanX / 2;
+                const int baseY = anchorY - spanY / 2;
+                // Unusable tree cells at an origin, counted until they pass `limit` (-1: off the
+                // map edge).
+                auto originBad = [&](int ox, int oy, int limit) -> int {
+                    if (ox < kForestEdge || oy < kForestEdge) return -1;
+                    if (ox + spanX > mapW - kForestEdge || oy + spanY > mapW - kForestEdge) return -1;
+                    int bad = 0;
+                    for (int r = 0; r < rows; ++r) {
+                        for (int c = 0; c < cols; ++c) {
+                            if (forestCellFree(ox + c * forestStep, oy + r * forestStep)) continue;
+                            ++bad;
+                            if (bad > limit) return bad;
+                        }
+                    }
+                    return bad;
+                };
+                // Every origin on the search stride, in rings outward from the anchor; the one with
+                // the fewest unusable cells wins, the nearest ring on a tie.
+                int bestBad = budget;
+                for (int ring = 0; ring <= mapW / kForestSearchStep && bestBad > 0; ++ring) {
+                    for (int dy = -ring; dy <= ring && bestBad > 0; ++dy) {
+                        for (int dx = -ring; dx <= ring && bestBad > 0; ++dx) {
+                            if (std::max(std::abs(dx), std::abs(dy)) != ring) continue;
+                            const int ox = baseX + dx * kForestSearchStep;
+                            const int oy = baseY + dy * kForestSearchStep;
+                            const int bad = originBad(ox, oy, found ? bestBad - 1 : bestBad);
+                            if (bad < 0 || bad > bestBad || (found && bad == bestBad)) continue;
+                            found = true;
+                            bestBad = bad;
+                            originX = ox;
+                            originY = oy;
+                        }
+                    }
+                }
+                if (found) break;
+                if (cols == 1 && rows == 1) break;
+                cols = std::max(1, std::min(cols - 1, cols * 9 / 10));
+                rows = std::max(1, std::min(rows - 1, rows * 9 / 10));
+            }
+            if (resolved.empty() || !found) {
+                const char* why = resolved.empty() ? "no template names the species" : "no free ground";
+                Showroom_NoteForest(0, 0, 0, 0, mapW, 0, 0, 0, why, nullptr);
+            } else {
+                System::Random forestRng(kForestSeed);
+                GameUpdateLoop* gul = GameUpdateLoop::_singleton;
+                const uint32_t tidNR = NaturalResourceComponent::TypeId();
+                const uint32_t tidMap = MapComponent::TypeId();
+                const int centreC = cols / 2;
+                const int centreR = rows / 2;
+                int bestCentre = cols + rows + 1;   // more than any grid distance
+                const float* centreBounds = nullptr;
+                int planted = 0;
+                int skipped = 0;
+                int notGrown = 0;
+                for (int r = 0; r < rows; ++r) {
+                    for (int c = 0; c < cols; ++c) {
+                        const int x = originX + c * forestStep;
+                        const int y = originY + r * forestStep;
+                        if (!forestCellFree(x, y)) {
+                            ++skipped;
+                            continue;
+                        }
+                        // Species per cell: a fixed hash of the grid position, so neighbours mix.
+                        const uint32_t hash = ((uint32_t)c * 73856093u) ^ ((uint32_t)r * 19349663u);
+                        ForestKind& kind = resolved[(hash >> 4) % resolved.size()];
+                        void* mem = System::MemoryAllocator::MemAlloc(ENTITY_SIZE, 8);
+                        ComponentEntity* ent = mem ? ::new (mem) ComponentEntity(kind.tmpl) : nullptr;
+                        if (!ent) {
+                            ++skipped;
+                            continue;
+                        }
+                        ::Object::InternalPtr<ComponentEntity> ref(ent);
+                        StartTown_PlaceResourceCell(ent, y * mapW + x, game, &forestRng, tidNR, tidMap, tidModel);
+                        GrowthComponent* growth = ent->FindComponent<GrowthComponent>();
+                        const bool grown = growth && growth->resource.Get() && growth->model.Get() &&
+                                           growth->config && growth->growthScale != 0.0f;
+                        if (grown) {
+                            growth->SetProgress(1.0f / growth->growthScale);
+                        } else {
+                            ++notGrown;
+                        }
+                        ApplyResourceModelVariant(ent, tidModel, static_cast<int16_t>(kind.group),
+                                                  static_cast<int16_t>(kind.index));
+                        gul->m_entityList->RegisterEntity(&ref, static_cast<int>(kind.tmpl->_category));
+                        mark(x, y, 1, 1);
+                        ++kind.planted;
+                        ++planted;
+                        const int centreDist = std::abs(c - centreC) + std::abs(r - centreR);
+                        if (centreDist < bestCentre) {
+                            const ModelComponent* model = FindComponentOnEntity<ModelComponent>(ent, tidModel);
+                            if (model) {
+                                bestCentre = centreDist;
+                                centreBounds = &model->meshInstance._worldBounds.min.x;
+                            }
+                        }
+                    }
+                }
+                std::string tally;
+                for (const ForestKind& kind : resolved) {
+                    tally += kind.species + "=" + std::to_string(kind.planted) + " ";
+                }
+                tally += "skipped=" + std::to_string(skipped) + " notGrown=" + std::to_string(notGrown);
+                char msText[32];
+                std::snprintf(msText, sizeof(msText), " in %.0f ms", StressNowMs() - forestT0);
+                tally += msText;
+                const int x1 = originX + (cols - 1) * forestStep;
+                const int y1 = originY + (rows - 1) * forestStep;
+                Showroom_NoteForest(originX, originY, x1, y1, mapW, cols, rows, planted, tally.c_str(),
+                                    centreBounds);
             }
         }
     }
@@ -2182,7 +2370,8 @@ static int StartTown_SpawnStructures(MapGenerator* startConfig, EntityList* enti
             ComponentDescription* ptmpl = ResolveTemplateByPath("Template\\Pasture.rsc");
             int pw = 0, ph = 0;
             if (const char* xpos = std::strchr(pe, 'x')) {   // "WxH" size override
-                pw = std::atoi(pe); ph = std::atoi(xpos + 1);
+                pw = ClampedAtoi(pe);
+                ph = ClampedAtoi(xpos + 1);
             }
             if (ptmpl && (pw <= 0 || ph <= 0)) {
                 // Template-default footprint from CreatePlacedDescription (+0x44/+0x48);
@@ -2253,7 +2442,8 @@ static int StartTown_SpawnStructures(MapGenerator* startConfig, EntityList* enti
             ComponentDescription* otmpl = ResolveTemplateByPath("Template\\Orchard.rsc");
             int ow = 0, oh = 0;
             if (const char* xpos = std::strchr(oe, 'x')) {   // "WxH" size override
-                ow = std::atoi(oe); oh = std::atoi(xpos + 1);
+                ow = ClampedAtoi(oe);
+                oh = ClampedAtoi(xpos + 1);
             }
             if (otmpl && (ow <= 0 || oh <= 0)) {
                 const CreatePlacedDescription* cpd =
@@ -2331,7 +2521,8 @@ static int StartTown_SpawnStructures(MapGenerator* startConfig, EntityList* enti
             ComponentDescription* ttmpl = ResolveTemplateByPath("Template\\TradingPost.rsc");
             int tw = 0, th = 0;
             if (const char* xpos = std::strchr(te, 'x')) {      // "WxH" size override
-                tw = std::atoi(te); th = std::atoi(xpos + 1);
+                tw = ClampedAtoi(te);
+                th = ClampedAtoi(xpos + 1);
             }
             if (ttmpl && (tw <= 0 || th <= 0)) {
                 const CreatePlacedDescription* cpd =
@@ -2863,7 +3054,8 @@ static int StartTown_SpawnStructures(MapGenerator* startConfig, EntityList* enti
             ComponentDescription* tmpl = ResolveTemplateByPath(tmplPath);
             int w = 0, h = 0;
             if (const char* xpos = std::strchr(ev, 'x')) {      // "WxH" size override
-                w = std::atoi(ev); h = std::atoi(xpos + 1);
+                w = ClampedAtoi(ev);
+                h = ClampedAtoi(xpos + 1);
             }
             if (tmpl && (w <= 0 || h <= 0)) {
                 const CreatePlacedDescription* cpd =
@@ -3015,7 +3207,8 @@ static int StartTown_SpawnStructures(MapGenerator* startConfig, EntityList* enti
                 ComponentDescription* htmpl = ResolveTemplateByPath("Template\\HunterLodge.rsc");
                 int hw = 0, hh = 0;
                 if (const char* xpos = std::strchr(he, 'x')) {   // "WxH" size override
-                    hw = std::atoi(he); hh = std::atoi(xpos + 1);
+                    hw = ClampedAtoi(he);
+                    hh = ClampedAtoi(xpos + 1);
                 }
                 int hRadius = 0;
                 if (htmpl) {
@@ -3069,7 +3262,8 @@ static int StartTown_SpawnStructures(MapGenerator* startConfig, EntityList* enti
                 ComponentDescription* gtmpl = ResolveTemplateByPath("Template\\GathererShelter.rsc");
                 int gw_ = 0, gh_ = 0;
                 if (const char* xpos = std::strchr(ge, 'x')) {
-                    gw_ = std::atoi(ge); gh_ = std::atoi(xpos + 1);
+                    gw_ = ClampedAtoi(ge);
+                    gh_ = ClampedAtoi(xpos + 1);
                 }
                 ComponentDescription** acceptList = nullptr;   // HerbalistDescription::_herbs
                 int acceptN = 0, gRadius = 0;
@@ -3259,7 +3453,8 @@ static int StartTown_SpawnStructures(MapGenerator* startConfig, EntityList* enti
             ComponentDescription* ftmpl = ResolveTemplateByPath("Template\\FishermansDock.rsc");
             int fw = 0, fh = 0;
             if (const char* xpos = std::strchr(fe, 'x')) {
-                fw = std::atoi(fe); fh = std::atoi(xpos + 1);
+                fw = ClampedAtoi(fe);
+                fh = ClampedAtoi(xpos + 1);
             }
             uint32_t mask = 0;
             int radius = 0;
@@ -4014,11 +4209,8 @@ static void StartTown_AssignFoundingHousing(const std::vector<std::vector<Compon
                 tidResidence); fflush(stderr); return;
     }
 
-    // Defensive: keep any incidental WorkPlaceComponent attach in roster-only mode during the
-    // build (the residence path AssignWorkplace->a710 does no Scene op, but a family member's
-    // stale +0x248 detach could route through the c80e0 path — see g_wpcRosterOnly).
-    bool prevRosterOnly = g_wpcRosterOnly;
-    g_wpcRosterOnly = true;
+    // No roster-only hold (review F-088): SetHome (0x1401163d0) touches only the residence
+    // rosters, never WorkPlaceComponent::Attach / Detach, so there is nothing to hold.
     for (size_t f = 0; f < families.size() && f < g_foundingHouseIBPs.size(); ++f) {
         ComponentEntity* houseIBP = g_foundingHouseIBPs[f];
         if (houseIBP == nullptr) continue;
@@ -4103,7 +4295,6 @@ static void StartTown_AssignFoundingHousing(const std::vector<std::vector<Compon
                     misfiled);
         }
     }
-    g_wpcRosterOnly = prevRosterOnly;   // restore
 }
 
 // Drive the deferred occupied-house visuals once the scene is live. Called every

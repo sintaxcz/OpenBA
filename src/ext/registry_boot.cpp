@@ -24,6 +24,8 @@
 #include "ext/menu_entry/menu_entry.h"             // ext.menu_entry: the mod scan and remount seams
 #include "ext/phone_menu/phone_menu.h"             // ext.phone_menu: the menu safe area and backdrop seam
 #include "ext/fps_cap/fps_cap.h"                     // ext.fps_cap: the frame limiter's settings cap
+#include "ext/staggered_passes/staggered_passes.h"   // ext.staggered_passes: the shadow / reflection hold seams
+#include "ext/fps_counter/fps_counter.h"             // ext.fps_counter: the frame limiter's game-frame seam
 #include "ext/touch_pointer/touch_pointer.h"         // ext.touch_pointer: the Input::Device::_extAfterUpdate seam
 #include "ext/decode_ahead/decode_ahead.h"       // ext.decode_ahead: the CompressedStream decode seam
 #include "ext/async_gpu_create/async_gpu_create.h"   // ext.async_gpu_create: the backend's request follows the toggle
@@ -39,6 +41,9 @@
 #include "ext/save_failure_notice/save_failure_notice.h"   // fix.save_failure_notice: the save job / SaveLoad seams
 #include "ext/resources/text_provider.h"        // the Extensions dialog / Enhanced tab resources from the exe's text (KITFREE)
 #include "rsc_text_check.h"                      // src/diag: the kit cross-check, /rsccheck:1 on the command line
+#include "ext/sharp_ui/sharp_ui.h"            // ext.sharp_ui: MainLoop::_extVideoLost drops its sheet copies
+#include "ext/resources/sheet_builder.h"        // the providers' sheet textures: MainLoop::_extVideoRestored
+#include "ext/map_overlays/overlay_render.h"    // ext.map_overlays: the map window's image across a device restart
 #include "ext/resources/font_provider.h"         // KITFREE RSCFONT: ext.sharp_ui's font variants, provided at run time
 #include "ext/resources/ext_sprites.h"           // KITFREE: the Extensions sprite sheet provider
 
@@ -52,6 +57,8 @@
 #include "graphics/SunLight.h"  // the ext.max_shadow_res seam (DESIGN.md hook rule 5)
 #include "graphics/FrameCopyImageBuffer.h"   // the ext.better_water scene depth seam (DESIGN.md hook rule 5)
 #include "ext/better_water/better_water.h"
+#include "ext/winter_ice/winter_ice.h"
+#include "ext/better_clouds/better_clouds.h"
 #include "io/Persistence.h"
 #include "save/SaveLoad.h"      // the pseudo-mod seam Save::SaveLoad::_extExtraMods (DESIGN.md hook rule 5)
 #include "system/Configuration.h"
@@ -62,6 +69,8 @@
 #include "ui/ScrollElement.h"   // the fix.slider_drag_clamp seam, scroll-bar half
 #include "engine/MainLoop.h"     // the fix.boot_device_lost seam (DESIGN.md hook rule 5)
 #include "boot_device_lost/boot_device_lost_backend.h"   // fix.boot_device_lost: the backend half
+#include "decal_fog/decal_fog_backend.h"                  // fix.decal_fog_order: the backend half
+#include "audio/Device.h"        // the fix.stream_free_wait seam (DESIGN.md hook rule 5)
 #include "Game/WorldGeometry.h"  // the ext.terrain_batch seam (DESIGN.md hook rule 5)
 
 namespace Ext {
@@ -116,6 +125,29 @@ int EngineExtraMods(EngineRecord* out, int capacity) {
 
 }  // namespace
 
+namespace {
+// Engine::MainLoop::_extVideoLost: every extension's run-time video objects the restart cannot reload.
+void VideoLost() {
+    SharpUI::OnVideoLost();      // the sheet copies (a red dialog after a display change)
+    BetterWater::OnVideoLost();  // the shore programs and twins (a GPU hang after a display change)
+    MapOverlays::OnVideoLost();  // the map window's overlay image
+    WinterIce::OnVideoLost();    // the ice textures and the ice program's twins
+    BetterClouds::OnVideoLost(); // the sky's own programs back, our programs and twins forgotten, the noise released
+}
+// Engine::MainLoop::_extVideoRestored: the same objects made again, after the reload.
+void VideoRestored() {
+    Resources::RestoreSheetTextures();
+    MapOverlays::OnVideoRestored();
+    WinterIce::OnVideoRestored();
+    BetterClouds::OnVideoRestored();
+}
+}  // namespace
+
+State ResolveFromSettings() {
+    LoadReport report;
+    return Resolve(&PersistenceLookup, nullptr, CommandLineProfile().c_str(), &report);
+}
+
 void InitFromSettings() {
     const std::string cmd = CommandLineProfile();
     LoadReport report;
@@ -144,13 +176,24 @@ void InitFromSettings() {
     ::UI::SliderElement::_extFixDragClamp = &Fix().slider_drag_clamp;
     ::UI::ScrollElement::_extFixDragClamp = &Fix().slider_drag_clamp;
     // fix.save_failure_notice: the save job's temporary file, and state 2's status read + notice.
-    ::IO::PersistenceWorker::_extFixSaveTemp = &Fix().save_failure_notice;
+    ::IO::PersistenceWorker::_extFixSaveTemp = &LiveFix().save_failure_notice;   // the worker thread reads it
     ::Save::SaveLoad::_extFixSaveResult = &Fix().save_failure_notice;
     ::Save::SaveLoad::_extSaveResult = &Ext::SaveFailureNotice::OnSaveResult;
     // fix.boot_device_lost: one row, two seams -- the engine's SaveLoad-walk skip and the
     // renderer backend's recovery of a reset that failed on a removed device.
     ::Engine::MainLoop::_extFixBootDeviceLost = &Fix().boot_device_lost;
-    BootDeviceLostBackend::SetFixFlag(&Fix().boot_device_lost);
+    // Video objects made at run time across a device restart (MainLoop.h): set whatever the rows; with
+    // nothing built (the rows off, the faithful profile) each hook does nothing.
+    ::Engine::MainLoop::_extVideoLost = &VideoLost;
+    ::Engine::MainLoop::_extVideoRestored = &VideoRestored;
+    BootDeviceLostBackend::SetFixFlag(&LiveFix().boot_device_lost);   // the render thread reads it
+    // fix.decal_fog_order: the backend rewrites the decal pixel programs as they load (the loader threads
+    // read the atomic); a backend that cannot says so.
+    DecalFogBackend::SetFixFlag(&LiveFix().decal_fog_order);
+    if (!DecalFogBackend::Supported())
+        std::fprintf(stderr, "[Ext] fix.decal_fog_order: not supported by this renderer; the decal programs stay retail's\n");
+    // fix.stream_free_wait: OnSoundBufferDeleted's wait for the stream pass (review S-027).
+    ::Audio::Device::_extFixStreamFreeWait = &Fix().stream_free_wait;
     // fix.large_packages: the IO::FileSystem::_extPackagesMounted seam (null under the faithful
     // profile). The boot's .pkg mount ran inside Engine::Startup, before this; every mods mount runs it.
     LargePackages::Sync();
@@ -183,6 +226,10 @@ void InitFromSettings() {
     Ext::PhoneMenu::KeepVSyncOnFixedSurface();
     // ext.fps_cap (class A, live): the frame limiter's settings cap (src/app/frame_limiter.h).
     Ext::FpsCap::Sync();
+    // ext.staggered_passes (class A, live): the SunLight / ReflectionImageBuffer hold seams (issue #253).
+    Ext::StaggeredPasses::Sync();
+    // ext.fps_counter (class A, live): FrameLimiter::g_extGameFrame (src/app/frame_limiter.h).
+    Ext::FpsCounter::Sync();
     // ext.touch_pointer (class A, live): the Input::Device::_extAfterUpdate seam (P11_TOUCH_POINTER.md).
     Ext::TouchPointer::Sync();
     // ext.ambient_occlusion (class A, live): the main depth's format + the per-frame arm.
@@ -293,6 +340,8 @@ void InitFromSettings() {
 }
 
 bool SetAndRecord(const Entry& e, bool on) {
+    // The Syncs below write seams an overlapped emit's pass 2 reads: join it first (review F-225).
+    Ext::RenderPipe::SettleBeforeStepWrite();
     const bool changedNow = SetRequested(e, on);
     Ext::DrawGather::Sync();   // a class A toggle takes effect now (no-op for every other entry)
     Ext::DrawBatch::Sync();    // on / off: the DrawItemList seam is set or cleared now
@@ -302,6 +351,8 @@ bool SetAndRecord(const Entry& e, bool on) {
     Ext::BackgroundSave::Sync();     // on: the save seam is set now; off: cleared now, or after a running save
     Ext::AsyncGpuCreate::Sync();     // on / off: from the next load the loader opens
     Ext::FpsCap::Sync();             // on / off: the frame limiter's ceiling from the next frame
+    Ext::FpsCounter::Sync();         // on: counting from the next game frame (sums reset); off: the seam cleared
+    Ext::StaggeredPasses::Sync();    // on / off: the hold seams set or cleared, every held target renders next frame
     // ext.max_shadow_res: the sun map is rebuilt through Device::settingsChanged, raised HERE (main thread,
     // between frames) so render_pipe runs the resize sequentially; see SunLight.h (FAA-MENU).
     if (changedNow && std::strcmp(e.id, "max_shadow_res") == 0) ::Graphics::SunLight::ExtRequestMaxShadowResSync();
@@ -314,6 +365,9 @@ bool SetAndRecord(const Entry& e, bool on) {
 }
 
 int32_t SetValueAndRecord(const ValueKey& k, int64_t v) {
+    // A value the render thread reads, and the sun map's descriptors below: join an overlapped
+    // emit first (review S-028).
+    Ext::RenderPipe::SettleBeforeStepWrite();
     const int32_t before = Value(k);
     const int32_t stored = SetValue(k, v);
     // ext.max_shadow_size: a new size rebuilds the sun map (when the row is on and the retail combo is at
@@ -323,6 +377,8 @@ int32_t SetValueAndRecord(const ValueKey& k, int64_t v) {
     if (::IO::Persistence* p = ::IO::Persistence::_singleton)
         p->Set(KeyPrefix(Tier::Extension), k.id, static_cast<int>(stored));   // "ext.<id>" = "%i"
     if (std::strcmp(k.id, "fps_cap_rate") == 0) Ext::FpsCap::Sync();   // live: the next frame's ceiling
+    // ext.staggered_passes_*: live (the seams read the value); a held target renders next frame.
+    if (std::strncmp(k.id, "staggered_passes_", 17) == 0) Ext::StaggeredPasses::Sync();
     std::fprintf(stderr, "[Ext] %s=%d\n", SettingsKey(k).c_str(), stored);
     return stored;
 }

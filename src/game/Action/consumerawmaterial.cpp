@@ -42,6 +42,25 @@
 #include "object/Internal.h"   // ENDGAME B.3.4 caller batch G
 #include "Entity/ComponentEntity.h"
 #include "Component/ComponentDescription.h"   // B8 RT2: ::Object::SerializeExternal<ComponentDescription> (the downcast needs it complete)
+#include "ext/map_overlays/map_overlays.h"   // EXT SEAM (NOT RETAIL, docs/extensions/handins/MAPOVERLAYS.md): ext.map_overlays
+#include "Component/CitizenComponent.h"        // ext.map_overlays: a carrier's position
+#include "Component/CharacterComponent.h"
+#include "Component/ModelComponent.h"
+#include "Component/RawMaterialDescription.h"
+
+// EXT SEAM (NOT RETAIL, docs/extensions/handins/MAPOVERLAYS.md): ext.map_overlays. An item a citizen
+// carries is used up where the citizen stands; any other holder (a workshop, a home, a storage, a build
+// site) is the site.
+static void MapOverlaysConsumed(const ComponentEntity* holder, const ComponentDescription* item, int count) {
+    const CitizenComponent* carrier = holder->FindComponent<CitizenComponent>();
+    if (carrier == nullptr) {
+        Ext::MapOverlays::OnConsumedAt(item, holder, count);
+        return;
+    }
+    const RawMaterialDescription* material = item->FindDescription<RawMaterialDescription>();
+    const Math::Vector3& at = carrier->character->modelComponent->transform.translation;
+    Ext::MapOverlays::OnConsumed(material, at.x, at.y, count);
+}
 
 // ============================================================
 // Helpers, called by name (B3R)
@@ -68,8 +87,8 @@ void ConsumeRawMaterial::Persist(IO::Stream& stream) {
 
     // Serialize target entity (+0x20) with ComponentEntity type check
     _field20.InternalBasePtr::Serialize(ser);
-    if (_field20.Get() != nullptr) {
-        if (!::Object::IsDerivedFromNullSafe(_field20.Get(), ComponentEntity::TypeId())) {
+    if (!_field20.IsNull()) {
+        if (!::Object::IsDerivedFromNullSafe(_field20, ComponentEntity::TypeId())) {
             _field20 = nullptr;
         }
     }
@@ -144,6 +163,8 @@ int  ConsumeRawMaterial::AbstractImpl(ActionStack* actionStack) {
         return 0;
     }
 
+    const bool mapOverlays = Ext::MapOverlays::g_on;   // ext.map_overlays: tested once, above the loop
+
     do {
         Entry* matEntry = &_field28.data[matIdx];
         int requestedCount = matEntry->count;
@@ -196,6 +217,10 @@ int  ConsumeRawMaterial::AbstractImpl(ActionStack* actionStack) {
         int categoryIndex = ResourceCategory(matEntry->material);   // 0x140088f90
         if (categoryIndex >= 0) {
             town->professionResources._data[categoryIndex].field_0x0C += consumedCount;
+        }
+        if (mapOverlays) {
+            // ext.map_overlays: used up (a workshop input, a tool, clothing, an herb, road stone)
+            MapOverlaysConsumed(_field20.Get(), matEntry->material, consumedCount);
         }
 
         matIdx++;
@@ -299,9 +324,15 @@ ConsumeRawMaterial::~ConsumeRawMaterial() {
 // ============================================================
 // 0x1400c6440: +0x20 = *param_2 ; +0x28 = 0 ; +0x30 = 0 (one qword: count and capacity;
 // +0x38 untouched).
+// NOT RETAIL (review F-159): retail leaves the reserve flag +0x38 as the allocator left
+// it, and AddMaterial (0x1400c64e1 CMP byte ptr [RDI + 0x38],BL), CheckEntity and
+// AbstractImpl branch on it: a read of an indeterminate bool. It starts false here, the
+// value every other construction path gives it (the default ctor, and the 3-arg ctor's
+// callers in the consume-produce paths pass 0).
 ConsumeRawMaterial::ConsumeRawMaterial(ComponentEntity* const* storage)
     : _field20(*storage),
-      _field28{nullptr, 0, 0} {}
+      _field28{nullptr, 0, 0},
+      _field38(false) {}
 
 // ============================================================
 // FUN_1400c64b0 — ConsumeRawMaterial::AddMaterial (the consume-list append).

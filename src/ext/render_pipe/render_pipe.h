@@ -28,6 +28,12 @@ namespace RenderPipe {
 void Sync();
 bool Installed();
 
+// Main thread, inside the fixed steps, before a write the in-flight emit reads (review F-225,
+// S-028): a class-A toggle's seams (SetAndRecord), the sun map's descriptors and the video
+// settings (the Options apply). When the steps run beside an emit (P13_OVERLAP), that emit is
+// joined first; otherwise, or when not installed, nothing happens.
+void SettleBeforeStepWrite();
+
 // Per CSV window, for the [Stress::pipe] line (src/diag/stress_harness.cpp).
 struct Counters {
     uint64_t pipelined   = 0;   // frames whose first half ran pipelined (a packet was held)
@@ -51,6 +57,10 @@ struct Counters {
     uint64_t refused     = 0;   // packets the snapshot refused (they keep the fence)
     uint64_t snapshotUs  = 0;   // main-thread time building the copies, us
     uint64_t snapshotKB  = 0;   // arena bytes written, KB
+    uint64_t snapshotCopies = 0;   // issue #253: geometries copied (summed over the snapshots)
+    uint64_t snapshotItems  = 0;   //   draw items walked
+    uint64_t snapshotReused = 0;   //   of which at a geometry already copied (no second copy)
+    uint64_t snapshotKept   = 0;   //   of which at the live object (WorldGeometry modes)
     // The overlap governor at the window's end (overlap_governor.h): its state and smoothed measures
     bool     governorOn            = false;
     int64_t  governorRemovableUs   = 0;   // the fence wait a snapshot removes, per Frame

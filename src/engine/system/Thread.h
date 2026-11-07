@@ -18,6 +18,7 @@
 
 #include "platform_sync.h"     // Platform::LockStorage, Platform::EventHandle
 #include "platform_thread.h"   // Platform::ThreadHandle
+#include "system/thread_annotations.h"   // CAPABILITY on CriticalSection
 
 
 // ----------------------------------------------------------------------------
@@ -150,7 +151,8 @@ namespace System {
 // ----------------------------------------------------------------------------
 // System::CriticalSection — 0x28 bytes, NO vtable.
 // ----------------------------------------------------------------------------
-class CriticalSection {
+// A capability to clang's thread-safety analysis (system/thread_annotations.h): no layout change.
+class CAPABILITY("mutex") CriticalSection {
 public:
     // B6 row 50: the REAL ctor and dtor. Its one holder, the exe's
     // PathfinderThread (+0x30), constructs and destroys it as a member, as
@@ -168,8 +170,8 @@ public:
     // ?Unlock@CriticalSection@System@@QEAAXXZ   retail 0x18000c6f0
     // One Platform:: call each (EnterCriticalSection / LeaveCriticalSection on
     // Windows); bodies in src/engine/system/thread.cpp.
-    void Lock();
-    void Unlock();
+    void Lock() ACQUIRE();
+    void Unlock() RELEASE();
 
     // ---- the 0x28 bytes ----------------------------------------------------
     // PUBLIC for the same reason the (deleted) `IO::Registry`'s fields were: `offsetof` on
@@ -233,6 +235,16 @@ public:
     // and none of §A.1's recursion hazard.
     void Start();
     void WaitForFinish();
+
+    // NOT RETAIL (review F-150, F-157, F-147): bit 0 of `_runFlags` ("mid-job"),
+    // read as an ACQUIRE load. Retail reads the word with a plain
+    // `TEST byte ptr [RCX+0x8],0x1` at every poll site, while the worker sets and
+    // clears it outside any lock (ThreadFunc): a data race under the C++ model, and
+    // on ARM64 seeing the bit clear did not order the job's stores (the save list,
+    // `_status`, the load buffers) before the reads that follow. ThreadFunc clears
+    // the bit with a RELEASE RMW, so a caller that sees it clear sees the job's
+    // results. On x86 the acquire load is the same plain MOV retail has.
+    bool IsWorking() const { return (__atomic_load_n(&_runFlags, __ATOMIC_ACQUIRE) & 1u) != 0; }
 
     // ?ThreadFunc@Thread@System@@CAIPEAX@Z   retail 0x1800ca440
     // The worker entry point handed to _beginthreadex. Retail's is `CA`, i.e.

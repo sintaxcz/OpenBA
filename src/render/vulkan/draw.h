@@ -124,15 +124,16 @@ bool DrawReadImage(ImageBufferData* image, void* dst, int width, int height);
 // ---- P4: ext.ambient_occlusion's pass (ao/assao_pass.cpp) -------------------------------------------
 // THE READABLE DEPTH (any thread): while any reader asks for it, the main targets are made with the
 // depth image sampleable too (SAMPLED usage and a depth-aspect view beside the attachment view), the
-// dx11 R24G8_TYPELESS + SRV choice; with none, retail's attachment-only depth. Two readers: the AO pass
-// (AoBackend::RequestReadableDepth) and ext.better_water's scene depth copy (better_water/
-// scene_depth.cpp); each sets or clears its own bit. The request is taken when a frame begins: a change
+// dx11 R24G8_TYPELESS + SRV choice; with none, retail's attachment-only depth. Three readers: the AO pass
+// (AoBackend::RequestReadableDepth), ext.better_water's scene depth copy (better_water/scene_depth.cpp)
+// and ext.better_clouds' shadow pass (better_clouds/cloud_shadow.cpp); each sets or clears its own bit. The request is taken when a frame begins: a change
 // remakes the main targets at the next frame's first pass, as a sample-count change does (never between
 // two passes of one frame, which would drop the depth and colour drawn so far). Returns true when this
 // reader's request changed. DrawDepthReadable: what exists now.
 enum DepthReader : uint32_t {
     kDepthReaderAo = 1u,
     kDepthReaderSceneDepth = 2u,
+    kDepthReaderClouds = 4u,
 };
 bool DrawRequestReadableDepth(uint32_t reader, bool on);
 bool DrawDepthReadable();
@@ -151,14 +152,22 @@ struct AoTargets {
     VkFormat colorFormat = VK_FORMAT_UNDEFINED;
 };
 // Renderer::Draw's AO seam, on the recording thread inside a frame: the pass in progress ends (its
-// clears land) and the main depth moves to SHADER_READ_ONLY. ext.better_water's scene depth copy uses
-// the same bracket (DrawAoBegin, its own pass, DrawAoEnd). False, nothing done, outside a frame or
+// clears land) and the main depth moves to SHADER_READ_ONLY. ext.better_water's scene depth copy and
+// ext.better_clouds' shadow pass use the same bracket (DrawAoBegin, its own pass, DrawAoEnd). False, nothing done, outside a frame or
 // while the depth is not readable (the frames between the request and the remake).
 bool DrawAoBegin(AoTargets* out);
-// A pass on the main colour alone (LOAD, no depth; resolved like every main pass), for the AO apply.
-bool DrawAoBeginApply();
-// After the AO pass: its pass ends and the command buffer's bound pipeline, sets, viewport, scissor and
-// vertex buffers are forgotten, so the next engine draw binds everything again (dx11's StateBackup).
+// The pass of the AO apply, on the main colour (LOAD; resolved like every main pass). Issue #253: when
+// the bound render buffer is the main target (colour and depth: the Blended list's pass), the pass is
+// that one, with the main depth attached and LOADed, and DrawAoEnd leaves it open for the Blended draws
+// (one full-resolution colour store and load fewer; identical pixels, the apply's depth test is off).
+// Otherwise the main colour alone, as before. `*depthFormat` / `*stencilFormat`: the pass's depth and
+// stencil attachment formats (VK_FORMAT_UNDEFINED when none), which the apply's pipeline must match.
+bool DrawAoBeginApply(VkFormat* depthFormat, VkFormat* stencilFormat);
+// After the AO pass: the command buffer's bound pipeline, sets, viewport, scissor and vertex buffers
+// are forgotten, so the next engine draw binds everything again (dx11's StateBackup). Its pass ends,
+// except the apply's pass on the main target (DrawAoBeginApply), which the next engine draw continues.
 void DrawAoEnd();
+// A pass the AO stage records itself (its own targets, not the apply): counted for the frame line.
+void DrawNoteAoPass();
 
 }  // namespace VideoVulkan

@@ -41,6 +41,7 @@
 // ============================================================================
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -76,13 +77,18 @@ struct Fixes {
     bool unresolved_seeds  = true;   // docs/retail_bugs.md §21, src/ext/unresolved_seeds/: no null in the town's agriculture list (start town, load)
     bool commute_cost      = true;   // docs/retail_bugs.md §6, src/ext/commute_cost/: sim-visible, a region pair's first commute query answers its cost, not 0
     bool nomad_arrival     = true;   // docs/retail_bugs.md §22, src/ext/nomad_arrival/: sim-visible, a nomad counts as arrived only near the town hall, else retries once and leaves
-    bool mods_persist      = true;   // docs/retail_bugs.md §23: the mod list is written to settings.cfg when Mods is confirmed, and Mods is greyed out in a game
+    bool mods_persist      = true;   // docs/retail_bugs.md §23: the mod list is written to settings.cfg when Mods is confirmed (in a game too, after a warning)
     bool boat_reach_notice = true;   // docs/retail_bugs.md §28, src/ext/boat_reach_notice/: an event-log line when a merchant boat finds no water route to a trading post's dock
     bool save_failure_notice = true; // docs/retail_bugs.md §27, src/ext/save_failure_notice/: a failed save says so, and keeps the previous save (engine seams PersistenceWorker::_extFixSaveTemp, SaveLoad::_extFixSaveResult)
     bool cancel_refund     = true;   // docs/retail_bugs.md §26, src/ext/cancel_refund/: sim-visible, a cancelled site's materials that do not fit on its footprint are laid around it, not discarded
     bool autotrade_free_goods = true;   // docs/retail_bugs.md §24, src/ext/autotrade_free_goods/: sim-visible, auto-trade does not pay with goods the merchant prices 0
     bool input_fetch_room  = true;   // docs/retail_bugs.md §25, src/ext/input_fetch_room/: sim-visible, a production worker's input fetch fits the workplace's free room
     bool stranded_wade     = true;   // docs/retail_bugs.md §19, src/ext/stranded_wade/: sim-visible, a citizen cut off from his home's zone (else his lost home's, the hall's, a storage's) whose walk there was refused wades back
+    bool debug_spawn_origin = true;  // docs/retail_bugs.md §29, src/ext/debug_spawn_origin/: the debug panel's spawn-citizens button places its citizens by the world origin when no storage has a use node, instead of hanging
+    bool statusbar_empty_town = true;   // review S-006, src/game/Dialog/statusbarui.cpp: a status-bar icon click dispatched after the last citizen left does nothing, instead of reading the removed citizen past the list's end
+    bool minimap_outline_clip = true;   // docs/retail_bugs.md §31, src/ext/minimap_outline_clip/: UI only, the minimap's camera outline keeps every side when a corner lies off the map
+    bool stream_free_wait  = true;   // review S-027 (engine seam Audio::Device::_extFixStreamFreeWait): a streamed sound freed while its stream pass runs waits for the pass, so the worker reads no freed seek table
+    bool decal_fog_order   = true;   // docs/retail_bugs.md §32, src/render/common/decal_fog/ (backend seam DecalFogBackend::SetFixFlag): render only, next start; the decal pixel programs tint, then fog
 };
 
 // One bool per registered extension (settings key `ext.<id>`). Each extension
@@ -93,6 +99,9 @@ struct Extensions {
     bool eye_camera = false;   // class A: src/ext/eye_camera/ (docs/extensions/handins/EYECAM.md)
     bool no_fog = false;       // class A: src/ext/no_fog/ (docs/extensions/handins/NOFOG.md)
     bool show_grid = false;    // class A: src/ext/show_grid/ (docs/extensions/handins/SHOWGRID.md)
+    bool fps_counter = false;  // class A: src/ext/fps_counter/, FrameLimiter::g_extGameFrame (docs/extensions/handins/FPSCOUNTER.md)
+    // class A: src/ext/building_finder/ (docs/extensions/handins/BUILDINGFINDER.md)
+    bool building_finder = false;
     bool tool_names = false;   // class C: src/ext/tool_names/ (docs/extensions/handins/TOOLNAMES.md)
     bool better_camera = false; // class B: src/ext/better_camera/ (docs/extensions/handins/BETTERCAM.md): zoom range 6 .. 200 + steady tilt
     bool high_limits = false;   // class B: src/ext/high_limits/ (docs/extensions/handins/HIGHLIMITS.md)
@@ -113,6 +122,9 @@ struct Extensions {
     bool seamless_loops = false; // class A, next start: src/ext/seamless_loops/ (docs/extensions/handins/SEAMLESS.md)
     bool better_water = false; // class A, live: src/ext/better_water/, seam WorldGeometry's water-range draw (docs/extensions/handins/BETTERWATER.md)
     bool better_trees = false; // class A: src/ext/better_trees/ (docs/extensions/handins/BETTER-TREES.md): smooth leaf edges + stable tree shading + edge dapple
+    bool boat_lane = false;    // class B: src/ext/boat_lane/, seam BoatComponent::SetDestination (docs/extensions/handins/BOATLANE.md)
+    bool winter_ice = true;    // class A, live: src/ext/winter_ice/, seam WorldGeometry's lake-range draw (docs/extensions/handins/WINTERICE.md)
+    bool better_clouds = false; // class A, live: src/ext/better_clouds/, the sky material's pass slots + the material setup seam (docs/extensions/handins/BETTERCLOUDS.md)
     // class C: src/ext/restricted_foods/ (docs/extensions/handins/RESTRICTEDFOODS.md); the foods checked on the
     // Foods page are not eaten
     bool restricted_foods = false;
@@ -126,6 +138,9 @@ struct Extensions {
     // class C: src/ext/family_tree/ (docs/extensions/handins/FAMILYTREE.md); the town's births, marriages and
     // deaths
     bool family_tree = false;
+    // class C: src/ext/map_overlays/ (docs/extensions/handins/MAPOVERLAYS.md); data views in the map window,
+    // the production / consumption / traffic history kept in the save
+    bool map_overlays = false;
     bool spread_warmth = false; // class B: src/ext/spread_warmth/ (docs/extensions/handins/HITCH_PFBURST.md)
     bool async_save_compress = false; // class A: src/ext/async_save_compress/, seam IO::CompressedStream::_extAsyncCompress (docs/extensions/handins/HITCH_SAVE.md)
     bool drain_split = false; // class B: src/ext/drain_split/ (docs/extensions/handins/HITCH_DRAINSPLIT.md)
@@ -148,6 +163,8 @@ struct Extensions {
     bool fps_cap = false; // class A, live: src/ext/fps_cap/, FrameLimiter::SetSettingsCap (src/app/frame_limiter.h; docs/android/P8_INPUT_OPTIONS.md)
     bool touch_mode = false; // class A, live: src/ext/touch_mode/, seam UI::UserInterface::_extDialogScale + ext.phone_menu's place hook + PlayerToolManager::UpdateCamera (docs/android/TOUCH_MODE.md)
     bool touch_pointer = false; // class A, live: src/ext/touch_pointer/, seams Input::Device::_extAfterUpdate + Platform::Touch::SetSink + ext.touch_mode's camera hold and place hook (docs/android/P11_TOUCH_POINTER.md)
+    bool staggered_passes = false; // class A, live: src/ext/staggered_passes/, seams Graphics::SunLight::_extStaggerEvery + Graphics::ReflectionImageBuffer::_extStaggerEvery (graphics/stagger_hold.h; issue #253)
+    bool fullscreen_mode = true; // class A, next video reset: src/ext/fullscreen_mode/, the Options Video tab's Fullscreen cell + the DX11 swap chain's seams (src/render/dx11/devicedata.cpp)
 #ifdef BANISHED_UNIT_TEST
     // tests/unit/ext_registry_test.cpp only: one extension per class, so the
     // lock semantics are tested before a real extension exists. Not in the exe.
@@ -167,7 +184,7 @@ struct Extensions {
 // feature itself costs). The initialisers are the boot-less defaults and must
 // equal the table's `defaultValue` (the unit tests check it).
 struct Values {
-    int32_t ao_quality = 2;     // ext.ao_quality  1..3   (owner ambient_occlusion): Low / Medium / High
+    int32_t ao_quality = 2;     // ext.ao_quality  1..4   (owner ambient_occlusion): Low / Medium / High / Lowest (4: appended so 1..3 keep their meaning; issue #253)
     int32_t ao_opacity = 20;    // ext.ao_opacity  0..30 percent (owner ambient_occlusion): the apply's strength; the user's look 2026-10-14: 20 is the max that reads well, 30 the ceiling
     int32_t foliage_aa_mode = 2; // ext.foliage_aa_mode 1..2 (owner better_trees): 1 smooth edges, 2 + distance fill (FOLIAGE_AA.md §1 ruling 4)
     int32_t max_shadow_size = 4096; // ext.max_shadow_size 4096 | 8192 (owner max_shadow_res): the sun map at High (FAA-SHADOW2)
@@ -175,6 +192,7 @@ struct Values {
     int32_t create_on_demand_idle_min = 0; // ext.create_on_demand_idle_min 0..120 (owner create_on_demand): minutes unused before a made object is given back, 0 = never, the default until re-makes are prefetched (CREATEONDEMAND.md section 7)
     int32_t texture_quality_drop = 0; // ext.texture_quality_drop 0..1 (owner texture_quality): the top mip levels a qualifying texture is made without, 0 = Full (the default: the row or profile=all alone drops nothing), 1 = Half; an older 2 (Quarter, removed by ruling) clamps to 1; read once at boot (TEXQUALITY.md)
     int32_t fps_cap_rate = 60; // ext.fps_cap_rate 30 | 60 | 90 | 120 (owner fps_cap): the menu's and the game's frame-rate ceiling while the row is on; 60 is the phone's ruled default (docs/android/P8_INPUT_OPTIONS.md)
+    int32_t fullscreen_borderless = 0; // ext.fullscreen_borderless 0..1 (owner fullscreen_mode): with VideoFullscreen on, 0 = exclusive (retail's DXGI mode switch), 1 = borderless (a windowed swap chain in a popup over the whole monitor, at the desktop's size)
     int32_t touch_mode_toolbar_scale = 200; // ext.touch_mode_toolbar_scale 100 | 125 | 150 | 175 | 200 (owner touch_mode): the in-game toolbar's own scale in percent, shrunk to fit beside the control cluster (docs/android/TOUCH_MODE.md)
     int32_t touch_mode_pad_scale = 100; // ext.touch_mode_pad_scale 0 | 50 | 60 | 75 | 100 | 125 (owner touch_mode): the camera pad cluster's size in percent of its own (a cell of 0.11 of the short edge), 0 = the cluster hidden; 100 = the size it always had (issue #96, docs/android/TOUCH_MODE.md section 5)
     int32_t touch_mode_action_bar_scale = 100; // ext.touch_mode_action_bar_scale 25 | 30 | 35 | 50 | 60 | 75 | 100 | 125 (owner touch_mode): ext.touch_pointer's placement bar (place / rotate / flip / cancel) in percent of the cluster's 100 % cell, whatever the pad's own scale; 100 = the size it always had (issue #96)
@@ -197,6 +215,10 @@ struct Values {
     int32_t derived_cache_mb = 4096; // ext.derived_cache_mb 256..65536 (owner compress_ao, the cache's first user): the derived-data cache's cap in MB (COMPRESSAO.md)
     int32_t natural_tree_growth = 1; // ext.natural_tree_growth 0..1 (owner better_trees): per-tree autumn colour, leaf fall, regrowth and green variation while the row is on (NATURAL_GROWTH.md)
     int32_t phone_menu_safe_margin = 3375; // ext.phone_menu_safe_margin 0 | 2000 | 3375 | 4500 | 6000 (owner phone_menu): the safe-area inset in thousandths of a percent of the screen height (3375 = 3.375 %, the margin it always had: phone_math.h kSafeMarginFraction), 0 = none (a tablet without cut-outs; issue #96, handins/PHONEMENU.md)
+    int32_t staggered_passes_shadow = 2; // ext.staggered_passes_shadow 1 | 2 | 3 | 4 (owner staggered_passes): the sun's shadow map renders at least every N frames on a near-still view (1 = every frame, as retail); 2 is the ruled default (issue #253)
+    int32_t staggered_passes_reflection = 2; // ext.staggered_passes_reflection 1 | 2 | 4 | 8 (owner staggered_passes): the water's reflection image renders at least every N frames on a near-still view (1 = every frame); 2 is the ruled default (issue #253)
+    int32_t sharp_ui_icons = 0; // ext.sharp_ui_icons 0..1 (owner sharp_ui): 1 = the dialog and Extensions sheets drawn from their magnified copies with our art (SHARP_SPRITES.md); 0 = the text only (the default, the user 2026-11-04)
+    int32_t better_clouds_mode = 1; // ext.better_clouds_mode 1..2 (owner better_clouds): 1 On (the drifting clouds in the sky), 2 Fancy (+ their shadows on the ground) (BETTERCLOUDS.md)
     int32_t better_water_mode = 1; // ext.better_water_mode 1..2 (owner better_water): 1 Plain (the shore pass), 2 Fancy (+ the shore strip on the bank side); Plain until Fancy is verified (BETTERWATER.md section 7)
 };
 
@@ -234,6 +256,11 @@ struct Entry {
 
 // The table, in menu order: every fix, then every extension.
 int EntryCount();
+// The most entries the Extensions dialog has rows for (src/game/Dialog/ExtensionsDialog.h). The table
+// must stay within it: the dialog drops the rows past it (it was 64 until the table outgrew it and the
+// newest default-on rows, Winter ice among them, went missing from the dialog). The unit tests
+// check EntryCount() against it.
+constexpr int kMaxEntries = 256;
 const Entry& EntryAt(int index);
 const Entry* FindEntry(const char* id);   // by id alone; null when unknown
 
@@ -307,6 +334,18 @@ const Fixes&      Fix();
 const Extensions& Ext();
 const Values&     Val();
 
+// The fix rows a thread other than the main one reads (the persistence worker's save job, the
+// renderer's device recovery), as atomics that follow the row: Install, SetRequested and
+// UnlockForGame store them after they write the row. The plain bools in Fix() are written by the
+// Extensions dialog on the main thread and are read there only (review F-262: a worker reading the
+// plain bool through a pointer raced the dialog's write).
+struct LiveFixes {
+    std::atomic<bool> save_failure_notice{Fixes().save_failure_notice};
+    std::atomic<bool> boot_device_lost{Fixes().boot_device_lost};
+    std::atomic<bool> decal_fog_order{Fixes().decal_fog_order};   // the loader threads read it
+};
+const LiveFixes& LiveFix();
+
 // A valued key's live value, and the menu's write: clamps, stores it as both
 // requested and active (class A: never locked) and returns the stored value.
 // (Persisting it is SetValueAndRecord's job, registry_boot.cpp.)
@@ -321,6 +360,10 @@ bool Active(const Entry& e);
 // Replace both the requested and the active state (boot; the unit tests).
 // Clears the lock.
 void Install(const State& requested, Profile profile, bool profileFromCommandLine);
+// True once Install has run (InitFromSettings at boot, after Engine::Startup). Before it the active
+// State is the table's defaults, not settings.cfg's: a seam that runs inside Engine::Startup reads
+// ResolveFromSettings instead (ext.fullscreen_mode's DX11 device creation).
+bool Installed();
 
 Profile CurrentProfile();
 // True when the profile came from the command line (`/profile:...`): the gate.
@@ -431,6 +474,9 @@ int PseudoModLoadStatus(const char* path, int32_t savedFormatVersion);
 // Engine::Startup (which ran Persistence::ReadSettings). One `[Ext]` line per
 // entry goes to stderr (standalone_error.log).
 void InitFromSettings();
+// The State InitFromSettings resolves (the settings map and the command line's /profile), resolved now
+// and installed nowhere: for a seam that runs before it (Installed() false).
+State ResolveFromSettings();
 
 // The dialog's write-back: SetRequested, then the entry's `fix.<id>` /
 // `ext.<id>` into the settings map (Persistence::Set, "%i"). The caller

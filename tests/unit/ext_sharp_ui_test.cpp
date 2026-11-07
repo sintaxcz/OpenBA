@@ -200,6 +200,14 @@ UNIT_TEST(ext_sharp_ui_variant_pick) {
         // ext.phone_menu's 25 % at 1x (ratio 4): beyond the compiled range, retail's quads.
         CHECK(Ext::SharpUI::PickFontHeight(24, 4.0f, 1.0f, &keep) == 24 && keep);
         CHECK(Ext::SharpUI::PickFontHeight(24, 1.0f, 1.0f, &keep) == 24 && !keep);
+        // Render scale Quarter, UI 42 (_uiScale 42 / 25 = 1.68, ratio 0.595): below the compiled
+        // range, retail's quads, not 24-px glyphs on 14-px advances.
+        CHECK(Ext::SharpUI::PickFontHeight(24, 1.0f / 1.68f, 1.0f, &keep) == 24 && keep);
+        // Quarter, UI 100 (ratio 0.25) and Half, UI 100 (ratio 0.5): likewise for every font.
+        for (int base : {14, 18, 24, 48}) {
+            CHECK(Ext::SharpUI::PickFontHeight(base, 0.25f, 1.0f, &keep) == base && keep);
+            CHECK(Ext::SharpUI::PickFontHeight(base, 0.5f, 1.0f, &keep) == base && keep);
+        }
     }
 
     char path[64];
@@ -340,6 +348,43 @@ UNIT_TEST(ext_sharp_ui_twin_path) {
     CHECK(!Ext::SharpUI::WantTwin2x(0.6667f, 0.6667f));
 }
 
+// The sheet copy's factor: none at or below one device pixel per unit, then the
+// smallest factor that is not magnified, the largest beyond them all.
+UNIT_TEST(ext_sharp_ui_pick_sheet_factor) {
+    using Ext::SharpUI::PickSheetFactor;
+    const int both[] = {2, 4};
+    const int two[] = {2};
+    CHECK(PickSheetFactor(1.0f, 1.0f, both, 2) == 0);           // slider 100
+    CHECK(PickSheetFactor(0.6667f, 0.6667f, both, 2) == 0);     // slider 150: shrunk
+    CHECK(PickSheetFactor(1.3333f, 1.3333f, both, 2) == 2);     // slider 75
+    CHECK(PickSheetFactor(2.0f, 2.0f, both, 2) == 2);           // slider 50: texel for pixel
+    CHECK(PickSheetFactor(2.0005f, 1.9995f, both, 2) == 2);     // the tolerance
+    CHECK(PickSheetFactor(2.6667f, 2.6667f, both, 2) == 4);     // Retina at slider 75
+    CHECK(PickSheetFactor(1.9f, 2.2f, both, 2) == 4);           // the larger axis decides
+    CHECK(PickSheetFactor(4.0f, 4.0f, both, 2) == 4);
+    CHECK(PickSheetFactor(5.5f, 5.5f, both, 2) == 4);           // beyond: the largest
+    CHECK(PickSheetFactor(2.6667f, 2.6667f, two, 1) == 2);      // a 2x-only sheet
+    CHECK(PickSheetFactor(1.3333f, 1.0f, both, 2) == 0);        // one axis not magnified
+    CHECK(PickSheetFactor(3.0f, 3.0f, both, 0) == 0);           // no art set
+}
+
+// Review F-228: a magnified copy is built only when each side fits a texture
+// (16384) and so every level's byte size fits the int the level array takes; a
+// base sheet's size comes from its file unbounded.
+UNIT_TEST(ext_sharp_ui_scaled_sheet_fits) {
+    using Ext::SharpUI::ScaledSheetFits;
+    CHECK(ScaledSheetFits(1024, 1024, 2));         // the game's dialog sheet
+    CHECK(ScaledSheetFits(1024, 1024, 4));
+    CHECK(ScaledSheetFits(8192, 8192, 2));
+    CHECK(ScaledSheetFits(4096, 4096, 4));         // 16384 x 16384: the limit itself
+    CHECK(!ScaledSheetFits(4097, 4096, 4));
+    CHECK(!ScaledSheetFits(12288, 12288, 2));      // 2.4 GB of BGRA8: past INT_MAX
+    CHECK(!ScaledSheetFits(16384, 16384, 2));      // exactly 4 GiB: 0 as an int
+    CHECK(!ScaledSheetFits(0x40000000, 1, 4));     // not an int overflow
+    CHECK(!ScaledSheetFits(0, 1024, 2));
+    CHECK(!ScaledSheetFits(1024, -1, 2));
+}
+
 // A dialog that moves (a panel following its entity while the camera turns)
 // must move as one picture: rounded against its own upper-left, the device-pixel
 // gap between any two of its coordinates is the same wherever the dialog sits.
@@ -377,4 +422,24 @@ UNIT_TEST(ext_sharp_ui_snap_moves_whole) {
         CHECK(std::fabs((q.y2 - q0.y2) * px - shift) < 1e-3f);
         CHECK(std::fabs((q.x2 - q.x1) - (q0.x2 - q0.x1)) * px < 1e-3f);
     }
+}
+
+// Review F-229: a font's _lineHeight comes from its file unchecked, and a mod
+// font can carry the FrancophilSans face. A base height past kMaxFontBaseHeight
+// has no variants: the retail font, never an int overflow in the thirds
+// arithmetic, never a walk over millions of candidate heights.
+UNIT_TEST(ext_sharp_ui_huge_font_height) {
+    using namespace Ext::SharpUI;
+    CHECK(kMaxFontBaseHeight >= 64);   // FontLarge (48) and room above it
+    bool keep = false;
+    CHECK(PickFontHeight(300000000, 1.5f, 1.0f, &keep) == 300000000 && keep);
+    CHECK(PickFontHeight(300000000, 1.25f, 1.0f, &keep) == 300000000);
+    CHECK(PickFontHeight(300000000, 2.0f, 2.0f, &keep) == 300000000 && keep);
+    CHECK(PickFontHeight(200000000, 1.5f, 2.0f, &keep) == 200000000 && keep);
+    CHECK(PickVariantHeight(100000000, 1.25f) == 100000000);
+    CHECK(PickRetinaVariantHeight(160000000, 2.5f) == 160000000);
+    CHECK(!IsVariantHeight(100000000, 100000001));
+    CHECK(!IsRetinaVariantHeight(300000000, 400000000));
+    CHECK(VariantCount(100000000) == 0);
+    CHECK(VariantCount(kMaxFontBaseHeight) > 0);   // the cap itself still has its variants
 }

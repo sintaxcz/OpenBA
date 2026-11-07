@@ -1055,17 +1055,22 @@ port transcribes them (`src/game/Dialog/moddialog.cpp`, `src/engine/io/modificat
 harness (`t<row>` / `q<id>` tokens): the quit to menu ran a second remount with the list read back from
 the settings.
 
-**Lever.** Write the settings when the Mods dialog is confirmed; refuse changes in a game, so the list is
-only changed from the main menu (ruled 2026-11-01).
+**Lever.** Write the settings when the Mods dialog is confirmed. A change in a game was first refused
+(ruled 2026-11-01); since issue #100 it is allowed after a warning and kept (ruled 2026-11-03): players
+turn heavy visual mods off in large late-game towns.
 
 **Fix: `fix.mods_persist` (WIRED 2026-11-01).** Two seams read the row:
 - `ModDialog::Apply` (`src/game/Dialog/moddialog.cpp`): after `SaveList`, before the reload,
   `Persistence::WriteSettings`. At the main menu `SaveList` has just put the list in the settings map, so
   the file holds the new list before the reload starts.
-- `MainMenuDialog::OnOpened` (`src/game/Dialog/mainmenudialog.cpp`), the pause menu only: the Mods button
-  is disabled with retail's own `Enable(false)`, the call retail makes for a game with flag bit 10. It shows
-  greyed out like any disabled button; no new text, no new dialog.
-Not sim-visible; nothing new is saved. Off under `/profile:faithful` (retail's behaviour, both parts).
+- `ModDialog::Apply`, in a game only: before that write, the list is also put in the settings map (the
+  same `ModEnabled_` / `ModIndex_` keys `SaveList` writes at the menu, with `_savingSettings` raised for
+  the call), so the next menu's `RefreshList` reads back the set the game runs with and remounts nothing.
+- `MainMenuDialog::OnCommand` (`src/game/Dialog/mainmenudialog.cpp`), the pause menu only: the Mods button
+  first shows a Yes / No message box (`Dialog/Extensions.rsc:modsInGame`, `src/ext/mods_persist/`): a change
+  reloads the town, and turning off a mod the town uses can damage it (section 21). No keeps the pause menu.
+  A game with flag bit 10 still greys Mods out (retail), and the Extensions button follows Mods.
+Not sim-visible; nothing new is saved. Off under `/profile:faithful` (retail's behaviour, every part).
 
 ## 24. A trading post on auto-trade gives the merchant whole stacks of goods he does not buy
 
@@ -1299,3 +1304,279 @@ of `BoatComponent::SetDestination` calls `src/ext/boat_reach_notice/`, which app
 event-log entry (the trader's event type 0xd and icon, warning colour, the post's tile; the game's
 message table has no text for it, so the text is ours). A save keeps it like any other entry, as text
 and five ints, and retail reads such a save unchanged. No unit test: the row has no pure logic.
+
+## 29. The debug panel's "spawn citizens" button freezes a town whose storage has no use node
+
+**Symptom.** With a debug-menu mod loaded, pressing the debug panel's "spawn citizens" button freezes
+the game for good (the watchdog reports HUNG, exit 4) in a town whose storage list holds no building
+with a use node: a town whose only storage is stockpiles, or a modded storage built without use nodes.
+The button never returns. Reported with MegaMod's debug menu.
+
+**Retail mechanism.** The button (DebugUI id 326) calls `Game_SpawnCitizens` (`0x140060380`). It walks
+the town's storage list (CitizenBehavior `+0x00`), and for each storage with an `InteractComponent` sums
+its use nodes (the description's `_useNodes` count plus `InteractNodeCount` `0x140123070` of each
+`useLocations` child) and places one new homeless citizen per node at `NodePosition` (`0x140122e20`),
+up to four in all. An outer `do { ... } while (spawned < 4)` repeats the whole pass, the per-building
+count reset each time. When the list is non-empty but no storage has a use node, a pass places nobody,
+`spawned` stays below four and the pass repeats for ever on the main thread. An empty list returns at
+once.
+
+**Proof it is retail.** The Ghidra decompile of `0x140060380`: the outer loop's only exit is the
+`spawned < 4` test, with no count of what a pass placed; the port transcribes it
+(`src/game/Dialog/debugui.cpp`). Reproduced in the port with a diagnostic that cut the storage list to
+the stockpile before pressing 326: the main thread spun in the spawn loop until the watchdog's HUNG.
+
+**Lever.** End the press when a full pass places nobody, placing the rest somewhere a citizen can
+stand.
+
+**Ruling (2026-11-02).** The citizens left to place go close to the world origin.
+
+Fix: `fix.debug_spawn_origin` (tier 1), default on, off under `/profile:faithful`. After a pass over
+the storage list that placed nobody, `src/ext/debug_spawn_origin/` places the remaining citizens at the
+centre of the free land cell nearest the world origin, and the press ends. The world origin is the map
+centre: a world position (x, y) lies on cell (x + size / 2, y + size / 2) (DropOffRawMaterial::DropOnGround
+`0x1400c78c0`). The cell is searched in square rings out from the origin cell over the whole map; it
+must be zoned land (a terrain type `Map::FillZone` `0x14009c170` gives a zone, types 0-4 and 9-11, and a
+zone set), with no blocker, no occupant and no building footprint, so a lake or a building at the centre
+moves the point to the nearest shore. Retail's ring search `Map::FindPlacementCell` (`0x14009bd40`, used
+for dropped loads) was not reused: it gives up after seven rings, which a lake at the map centre can
+exceed. The position is the cell centre on the terrain (`Map::GetTerrainPos` `0x14009f3e0`). The
+citizens are made by the same code as on the use-node path (template, gender, age, `Initialize`,
+`RegisterEntity`); they are ordinary citizens, and nothing new is saved. The search does not ask that the cell
+joins the town: on a map whose centre is land cut off from the town the citizens start there
+(`fix.stranded_wade`, section 19, covers a citizen cut off from the town).
+Unit tests: `tests/unit/ext_debug_spawn_origin_test.cpp`.
+
+## 30. Hostile saves, packages, resources and settings: undefined behaviour and unbounded input (review 2026-11-03)
+
+**Symptom.** On the data the game ships, almost none. A crafted or corrupt save, mod package (`.pkg` /
+`.pkm`), resource or `settings.cfg` makes retail corrupt memory, crash, hang or exhaust memory: a
+negative or oversized count, length or index read from the file is used with no bound. A few rows need
+no hostile file: thread hand-offs with no synchronisation (F-101, F-103, F-137, F-138, F-147, F-150,
+F-157), the tick clock after 10.7 days of uptime (F-151), a clip whose loop frame is its end frame
+(F-121), and constructs that are undefined in C++ but happen to work in retail's compiled code (F-002,
+F-003, F-009, F-049, F-159).
+
+**Retail mechanism.** One per row below; the ledger row (`docs/history/review_20261103/README.md`,
+`findings_p3p4.json`, `findings_p8.json`) quotes the retail address and the instructions, and the PR
+body quotes them again next to the fix.
+
+**Proof it is retail.** Each row was found by a sanitizer, a fuzz input or a static path. Most
+`retail` labels were given after the retail body was read in Ghidra and found to do the same thing (no
+bound, no zero test, the same plain load or store), with three exceptions: F-001 is retail with a port
+widening on top (Copy8 reads 8 bytes where retail reads 1), F-009 is a retail idiom (`UI::String{null,
+-1}`) rather than one body compared instruction for instruction, and F-004 is labelled from the code's
+shape only and is not verified in Ghidra. A finding where the port differed from retail is a
+`docs/known_port_issues.md` row instead (rows 1351..1415).
+
+**Lever.** Campaign rulings 4 and 8: every instance of undefined behaviour gets a minimal fix with a
+`NOT RETAIL (review F-xxx)` comment, and hostile input that is not undefined behaviour (a hang, a giant
+allocation) gets plain hardening. Neither is a `fix.*` row and neither has a switch: valid data reads,
+runs and saves exactly as retail.
+
+Fixed in the port, still retail behaviour. "UB: minimal fix" is the smallest change that makes the
+operation defined (a bound, a clamp, a zero test, an atomic or a wait); "hardened" refuses or clamps the
+hostile value before the hang or the allocation.
+
+| Finding | Where (port) | Retail behaviour | Port today (PR) |
+|---|---|---|---|
+| F-001 | `src/engine/system/compression.cpp:312` | Decompress has no source-end bound on literal runs and match bytes (heap over-read; the port's Copy8 widens it to 8 bytes) | UB: minimal fix (#106) |
+| F-002 | `src/engine/system/compression.cpp:335` | Decompress match copy `op[k - dist]` wraps its unsigned index (pointer overflow) | UB: minimal fix (#106) |
+| F-003 | `src/engine/system/allocator.cpp:381` | ExpandMemoryRangeTable calls `memcpy(dst, nullptr, 0)` on the first range table | UB: minimal fix (#122) |
+| F-004 | `src/game/Game/worldgeometry_ray.cpp:136-152` | RayTestCell forms cell indexes from an out-of-range float in int32 (`INT_MIN - 2`, `INT_MIN + INT_MIN`); retail label not verified in Ghidra | UB: minimal fix (#122) |
+| F-009 | `src/engine/ui/sprite.cpp:310/400` | StringTable::GetText is called through `UI::String{null, -1}`: member call on a null `this` | UB: minimal fix (#122) |
+| F-012 | `src/engine/collection/array.cpp:2312` | Negative serialized array count: SetSizeCore destroys -n elements at old + n*stride (wild pointer free/release) | UB: minimal fix (#108) |
+| F-013 | `src/engine/io/compressed_stream_read.cpp:276` | DecompressFromSource reads a u16 compressedSize (up to 0xFFFF) into a 0x8000-byte stack scratch | UB: minimal fix (#106) |
+| F-014 | `src/engine/io/compressed_stream_read.cpp:285` | Stored block: uncompressedSize up to 0xFFFF is read straight into the 0x8000 window buffer | UB: minimal fix (#106) |
+| F-015 | `src/engine/io/compressed_stream_read.cpp:448` | A window whose uncompressedSize exceeds 0x8000 makes Read copy past the window buffer | UB: minimal fix (#106) |
+| F-016 | `src/engine/io/memory_stream.cpp:74` | Negative sourceOffset: MemoryStream::Read copies from before the blob | UB: minimal fix (#106) |
+| F-017 | `src/engine/io/package_file_read.cpp:252` | PK-C: UTF-16 transcode reads 2*len bytes from buf860 and walks off the stack frame (§76 over-read) | UB: minimal fix (#104) |
+| F-018 | `src/engine/io/package_file_read.cpp:304` | PK-G: PATH B (formatVersion > 2) writes no terminator, so BuildStringFrom's strlen runs off the frame | UB: minimal fix (#104) |
+| F-019 | `src/engine/io/package_file_read.cpp:347` | PK-B2: stack-buffer-overflow WRITE into buf860 from the UTF-16 string/name reads (len > 0x1040) | UB: minimal fix (#104) |
+| F-020 | `src/engine/io/package_file_read.cpp:385` | PK-B1: stack-buffer-overflow WRITE into the frame buffer (buf60) from the raw-UTF-8 string/name reads, len only checked > 0 | UB: minimal fix (#104) |
+| F-021 | `src/engine/io/package_file_read.cpp:596` | ReadPackfile entry name length overflows the 0x1840 stack frame buffer | UB: minimal fix (#104) |
+| F-022 | `src/engine/object/internal_class.cpp:690` | InternalFactory::PersistObject indexes _persistIds with a save-supplied index and no upper bound | UB: minimal fix (#109) |
+| F-023 | `src/engine/system/string.cpp:954` | String::Serialize (plain arm) does not terminate the String: its last byte comes from the stream, so C-string consumers read past the block | UB: minimal fix (#107) |
+| F-024 | `src/engine/ui/spritecapture_class.cpp:193` | SpriteCapture sheetIndex from a resource indexes _sheets with only a < 0 check | UB: minimal fix (#109) |
+| F-026 | `src/game/Game/gamegrid_serialize.cpp:250` | Map::Serialize reads map size and cell count independently; size*size loops walk past cells | UB: minimal fix (#109) |
+| F-028 | `src/render/dx11/imagebufferdata.cpp:610` | DX11 backend indexes kFormatToDxgi[8] / kFormatBytes[8] with the serialized ImageBuffer::_format (out-of-bounds read) | UB: minimal fix (#113) |
+| F-032 | `src/engine/io/compressed_stream_open.cpp:125` | Negative blockCount: Open reads headerSize*8 (negative, i.e. a huge size_t) bytes into a null directory | UB: minimal fix (#106) |
+| F-033 | `src/engine/io/package_file_read.cpp:465` | PK-H: negative blobLen is sign-extended into a ~16 EB MemAlloc request | hardened (#104) |
+| F-034 | `src/engine/io/text_codec.cpp:211` | DecodeOne format 1 (raw 16-bit) reads src[1] past the end of an odd-length source | UB: minimal fix (#107) |
+| F-035 | `src/engine/save/saveload_loadmeta.cpp:339` | Unbounded mod count in LoadMetaData: Array<ModInfo>::SetSize(count) allocates count*0x20; on failure the init loop runs on null+i*0x20 (write near null); smaller counts hang | UB: minimal fix (#105) |
+| F-040 | `src/render/dx11/devicedata.cpp:1698` | W-4: display-mode loop reads modes[i] through a null buffer when the mode count grows between the two GetDisplayModeList calls | UB: minimal fix (#113) |
+| F-048 | `src/engine/audio/vtbatch7_soundbuffer_soundeffect.cpp:245` | BinaryReader::SerializeBool stores a raw stream byte into a C++ bool (invalid bool value loads) | UB: minimal fix (#112) |
+| F-049 | `src/engine/graphics/animationstate.cpp:279` | GraphicsMesh::Node::_parent is serialized while uninitialised (indeterminate value written) | UB: minimal fix (#122) |
+| F-050 | `src/engine/io/compressed_stream_open.cpp:117` | Open: blockCount * 8 signed int overflow | UB: minimal fix (#106) |
+| F-051 | `src/engine/io/compressed_stream_read.cpp:261` | Negative position: SetWindow -> DecompressFromSource(negative block) indexes _headerData[negative] and left-shifts a negative value | UB: minimal fix (#106) |
+| F-052 | `src/engine/io/compressed_stream_read.cpp:262` | Top block: int32 overflow of start + uncompressedSize and activeStart + 0x8000 with 65536 blocks | UB: minimal fix (#106) |
+| F-053 | `src/engine/io/memory_stream.cpp:68` | MemoryStream::Read 32-bit cursor + count signed overflow (huge sourceOffset) | UB: minimal fix (#106) |
+| F-054 | `src/engine/io/package_file_read.cpp:302` | ReadPackfile path B: BuildStringFrom scans the uninitialised stack frame when a string length is <= 0 | UB: minimal fix (#104) |
+| F-055 | `src/engine/io/package_file_read.cpp:515` | PK-D: icon pixel count _iconHeight * _iconWidth overflows int32 (UB) | UB: minimal fix (#104) |
+| F-056 | `src/engine/io/package_file_read.cpp:517` | PK-D2: icon read size _iconData._size * 4 overflows int32 (UB) | UB: minimal fix (#104) |
+| F-057 | `src/engine/io/text_codec.cpp:149` | EncodeOne: `cp - 0xD800` signed overflow for cp below INT_MIN + 0xD800 (UTF-16 arms) | UB: minimal fix (#107) |
+| F-058 | `src/engine/io/text_codec.cpp:400` | ConvertText's int32 `produced` counter overflows when the converted text passes 2 GB | UB: minimal fix (#107) |
+| F-059 | `src/engine/io/text_codec.cpp:522` | RtIo_SerializeStringArray legacy UTF-16 arm: int32 len*2-2 overflow | UB: minimal fix (#107) |
+| F-060 | `src/engine/io/text_codec.cpp:526` | RtIo_SerializeStringArray: `static_cast<int32_t>(len) * 2 - 2` signed overflow for a legacy-UTF-16 length >= 0x40000000 | UB: minimal fix (#107) |
+| F-061 | `src/engine/save/saveload_loadmeta.cpp:317` | Save::SaveLoad::LoadMetaData thumbnail size `width*height*4` is a signed 32-bit overflow on input values; the wrapped size reaches MemAlloc and SerializeBytes | UB: minimal fix (#105) |
+| F-062 | `src/engine/video/imagebuffer_platform_serialize.cpp:278` | ImageBuffer::PlatformSerialize: `kindAtEntry - 4` overflows for a serialized _kind of 0x80000000 | UB: minimal fix (#113) |
+| F-067 | `src/render/dx11/devicedata.cpp:1479` | W-3: array grower computes base + i before its null test (null + nonzero offset) when MemAlloc returns null | UB: minimal fix (#113) |
+| F-068 | `src/render/dx11/imagebufferdata.cpp:375` | W-2: sampler addressTable[2] / filterTable[3] stack arrays indexed by streamed _addressU/V/W and _filter | UB: minimal fix (#113) |
+| F-072 | `src/engine/audio/vtbatch7_soundbuffer_soundeffect.cpp:212` | Uncapped serialized sizes drive allocations of up to 2^31 elements or bytes (DoS: fatal out-of-memory) | hardened (#112, #147) |
+| F-074 | `src/engine/io/compressed_stream_read.cpp:441` | Read spins forever when a read crosses the end of a short (< 32 KB) block | hardened (#106) |
+| F-075 | `src/engine/io/compressed_stream_read.cpp:447` | PK-A: CompressedStream::Read spins forever when a read crosses the end of a short final block | hardened (#106) |
+| F-076 | `src/engine/io/package_file_read.cpp:523` | PK-E: icon and preview allocations sized straight from the file with no cap (1-2 GiB per package) | hardened (#104) |
+| F-077 | `src/engine/io/package_file_read.cpp:586` | PK-F: fileCount drives an unbounded entry loop (2^31 iterations, SetSizeFill per entry), so the mod scan hangs | hardened (#104) |
+| F-078 | `src/engine/system/filename.cpp:266` | Filename(const char*) never returns on some "\.." names: AdjustDelimiters' outer loop re-splices to the same string forever | hardened (#123) |
+| F-079 | `src/engine/system/string.cpp:904` | String::Serialize / RtIo_SerializeStringArray: length word from the stream sizes the allocation with no cap (2 GB / 4 GB per string) | hardened (#107) |
+| F-080 | `src/engine/system/string.cpp:915` | System::String::Serialize trusts the 31-bit length word: SetLength(n-1) up to 2 GB, the legacy UTF-16 arm RtMemAlloc(n*2) up to 4 GB, then up to 2^31 per-element failing reads (OOM / hang) | hardened (#107) |
+| F-092 | `src/engine/achievement/achievement_manager.cpp:199` | AchievementManager::Update indexes _completed/_updateTimes by the save's instance count: heap OOB read+write when a save stores more instances than the achievement list | UB: minimal fix (#142) |
+| F-093 | `src/engine/achievement/achievement_serialize.cpp:115` | AchievementManager::Persist sizes _instances from the save's count with no tie to _completed/_updateTimes; the next Update reads and writes those arrays out of bounds | UB: minimal fix (#142) |
+| F-094 | `src/engine/achievement/achievement_serialize.cpp:173` | AchievementManager::Persist takes the instance count from the save without checking it against the achievement count; Update then writes past _updateTimes and reads past _completed, or indexes _instances with a cursor left over from the old array | UB: minimal fix (#142) |
+| F-095 | `src/engine/audio/audio_scene_update.cpp:455` | Scene::Update indexes Channel::channelFlags[8] / platformChannel[8] with the SoundEffect's sample index, unbounded: a SoundEffect with more than 8 samples writes past the Channel record | UB: minimal fix (#140) |
+| F-098 | `src/engine/graphics/animationstate.cpp:455` | Save-supplied animation layer handle indexes AnimationManager::_instances without a bound (heap overflow write in ResetAnimationState; reads in UpdateRootOnly / StaticRootVector / mesh skinning) | UB: minimal fix (#145) |
+| F-099 | `src/engine/input/input.cpp:150` | Key binding from settings.cfg indexes Device state arrays without a bound: heap OOB read (inputId) or null-base deref (device byte >= 3) | UB: minimal fix (#143) |
+| F-100 | `src/engine/input/keymap_load.cpp:269` | KeyMap::Load trusts any settings.cfg Input* value: device/inputId bytes are stored unchecked and later index Input::Device past its 0x1200-byte object (or through null) | UB: minimal fix (#143) |
+| F-101 | `src/engine/io/persistence_worker.cpp:507` | ~PersistenceWorker frees the job's block tables and filename before ~Thread joins the worker: an in-flight save/load job reads (LoadJob: writes through) freed memory | UB: minimal fix (#148) |
+| F-102 | `src/engine/system/allocator.cpp:431` | MemoryAllocator::Allocate wraps (size+7) and (total+8) for requests near 2^64: a huge request returns a small block, and 2^64-8 returns a block that stays on the free list | UB: minimal fix (#147) |
+| F-103 | `src/engine/system/thread.cpp:210` | Stale hFinished: Start() issued between the worker's `_runFlags &= ~1` and its SetEvent(hFinished) leaves hFinished signalled, so WaitForFinish returns while the next job is still running (Map::~Map then frees the PathfinderThread under a live A* job) | UB: minimal fix (#148) |
+| F-105 | `src/game/Action/action_pf_roots_road.cpp:212` | CompleteRoad's saved roadTileIndex indexes Map::cells unbounded in FinishRoadCell (out-of-bounds write: footprintCount, +0x2A/+0x2B, terrain type) | UB: minimal fix (#139) |
+| F-106 | `src/game/Action/createrawmaterial.cpp:217` | CreateRawMaterial's saved materialCellIdx indexes Map::cells unbounded and is used as the pile's cell | UB: minimal fix (#139) |
+| F-107 | `src/game/Action/moveto.cpp:165` | MoveTo::Persist reads pathCount from the save and serializes that many ints into the fixed path[0x100]: heap overflow of the 0x480-byte MoveTo | UB: minimal fix (#139) |
+| F-112 | `src/game/Game/serialize_heightmap_mesh.cpp:293` | BuildTerrainMesh sizes its vertex scratch from _chunkIndexStride but FillTerrainVertices writes _fieldCC^2 records into it; both are raw save fields (heap overflow write) | UB: minimal fix (#137) |
+| F-113 | `src/game/Tutorial/tutorial_next_scenario.cpp:146` | TutorialInstance::LoadNextScenario indexes the scenario list with Tutorial::currentStep without an upper bound | UB: minimal fix (#132) |
+| F-114 | `src/game/Tutorial/tutorial_wave.cpp:326` | TutorialSetupDialog::OpenHighlightDialog indexes the template bucket's entities with the resource's toolbarIndex, with only an upper test (a negative value reads before the array) | UB: minimal fix (#132) |
+| F-115 | `src/game/Tutorial/tutorial_wave.cpp:417` | RefreshStepUI indexes Tutorial::steps with the save-loaded currentStep and no bound (heap OOB read, then virtual calls through the read pointer) | UB: minimal fix (#132) |
+| F-118 | `src/engine/audio/audio_play_platform.cpp:275` | Device::PlayPlatform: nowTicks % (int64)(_durationSeconds / secondsPerTick) with no zero test (division by zero for a zero-length sound; float-cast overflow for a huge, inf or NaN duration) | UB: minimal fix (#140) |
+| F-119 | `src/engine/audio/audio_scene_update.cpp:328` | Save-supplied EffectSlot soundType indexes Scene::paused[5] and the stack array volumes[5] in Scene::Update (wild out-of-bounds read) | UB: minimal fix (#140) |
+| F-120 | `src/engine/audio/audio_scene_update.cpp:472` | Scene::Update: a sample with zero variants dereferences variants._data[0] through a null pointer | UB: minimal fix (#140) |
+| F-121 | `src/engine/graphics/animationstate.cpp:528` | Animation::GetPoseAtTime divides by zero (IDIV) when a clip's loop frame is its end frame; other loop/frame values give an out-of-range float->int and negative key indexes | UB: minimal fix (#145) |
+| F-122 | `src/engine/object/external_load.cpp:325` | External::Load dereferences null on a resource whose serialized type id is not registered; a non-External type leaks the created object (and the port static_casts it to External* before the check) | UB: minimal fix (#141) |
+| F-123 | `src/engine/object/internal_class.cpp:703` | InternalFactory::PersistObject dereferences null when the save names a type id that is unregistered or not an Object::Internal | UB: minimal fix (#141) |
+| F-124 | `src/engine/pathfinding/pointlist.cpp:92` | PointList::Serialize: a negative point count makes PointArraySetSize release Strings before the array (wild ~String) | UB: minimal fix (#147) |
+| F-125 | `src/engine/system/string.cpp:753` | String::FormatIndexed takes its vararg count from the format text: a string-table template with '@9' makes it va_arg and dereference up to 10 const char* the caller never passed | UB: minimal fix (#147) |
+| F-126 | `src/engine/system/value_types.cpp:119` | System::Random::Serialize loads _index from the save with no bound; Rand() then reads _mt[_index] out of bounds (up to 16 GB past the object) | UB: minimal fix (#147) |
+| F-127 | `src/engine/ui/dialog_create.cpp:508` | AddController(description, name): a name that matches neither the root nor any subtree leaves `insertion` null, which is then called (IsDerivedFrom) and dereferenced (target->_children); a swallowed lookup miss becomes a crash and member-call-on-null UB | UB: minimal fix (#138) |
+| F-128 | `src/engine/ui/documenttext.cpp:812` | DocumentText ^i/^f/^c/^li slot digits index _sheets/_fonts/_colors/_frameTable with no bound; ModDetails puts raw mod names and package filenames into that markup | UB: minimal fix (#138) |
+| F-129 | `src/engine/ui/widgets_input.cpp:563` | ComboElement::UpdateText calls IsDerivedFrom on a null Element when child 4 holds no LabelElement (null-this member call before the null test) | UB: minimal fix (#138) |
+| F-130 | `src/engine/video/device_startup.cpp:246` | Video::Device::ValidateConfiguration divides by the unvalidated settings value VideoRefreshD (division by zero / INT_MIN/-1) | UB: minimal fix (#143) |
+| F-136 | `src/engine/audio/audio.cpp:464` | Scene::FindFree3DEffect: (int64_t)((_maxLength / 20.0f) / secondsPerTick) overflows for a large serialized _maxLength (float-cast-overflow UB) | UB: minimal fix (#140) |
+| F-137 | `src/engine/audio/audio_stream_play.cpp:136` | Audio::Stream::_stopping (plain uint8_t) and the inherited _runFlags are shared between the main thread (Play / StopPlatform) and the stream worker (Run / ThreadFunc) with no synchronisation: a data race (UB) | UB: minimal fix (#148) |
+| F-138 | `src/engine/audio/audio_voice_callback.cpp:212` | The Device channel flag word is written by the backend audio thread (OnStreamEnd `flags \|= 2`) and read and cleared by the main thread's Device::Update without a lock: a data race (UB) | UB: minimal fix (#148) |
+| F-139 | `src/engine/io/compressed_stream_write.cpp:678` | CompressedStream::GetSize: (nHdr << 15) - 0x8000 + last overflows int32 for a 65536-block directory | UB: minimal fix (#147) |
+| F-142 | `src/engine/io/serialize_family.cpp:349` | BinaryReader::Skip: word24 + word20 is a signed int32 overflow when the record length word comes from the stream | UB: minimal fix (#147) |
+| F-144 | `src/engine/object/external_load.cpp:324` | External::Load dereferences a null type node when a .crs header names a typeId the Factory does not hold | UB: minimal fix (#141) |
+| F-145 | `src/engine/object/external_load.cpp:337` | External::Load calls IsDerivedFrom on a null object when the typeId names an abstract type (factoryFn returns null) | UB: minimal fix (#141) |
+| F-146 | `src/engine/picking/scene_grid.cpp:999` | GridFreeEntry copies an uninitialised int (_userValue2) of its stack temporary into the live Entry (indeterminate-value read, UB) | UB: minimal fix (#147) |
+| F-147 | `src/engine/save/saveload.cpp:799` | Persistence worker hand-off is an unsynchronised data race: SaveLoad::Update polls _runFlags/_status with plain loads, then reads the job's results with no acquire | UB: minimal fix (#148) |
+| F-149 | `src/engine/system/string.cpp:818` | String::ToInteger accumulates digits with signed int overflow (UB); the comment's 'retail simply wraps, and so do we' does not hold in C++ | UB: minimal fix (#147) |
+| F-150 | `src/engine/system/thread.cpp:205` | System::Thread::_runFlags is a plain uint32_t that the worker RMWs and other threads poll as the job-done flag: a data race, and no happens-before for the job's results | UB: minimal fix (#148) |
+| F-151 | `src/engine/system/timer.cpp:293` | Timer::CurrentTimeTicks overflows int64 after 10.7 days of uptime: (now - _systemInitialTick) * 1e6 is signed overflow (UB) | UB: minimal fix (#147) |
+| F-152 | `src/engine/system/value_types.cpp:415` | DateTime::DateAsString/TimeAsString ignore all three conversion results: a zero (failed-stat) save timestamp formats an uninitialised stack buffer in western time zones | UB: minimal fix (#147) |
+| F-153 | `src/engine/ui/animatedimageelement.cpp:115` | AnimatedImageElement::Update wraps the clock only once: a tick longer than two periods indexes _frames past its end, and an empty frame list converts NaN to int | UB: minimal fix (#138) |
+| F-154 | `src/engine/ui/font.cpp:503` | Font glyph walks bound the glyph index by the sprite sheet's count, then index the font's own shorter _glyphs table | UB: minimal fix (#138) |
+| F-156 | `src/engine/video/device_startup.cpp:259` | Video::Device::ValidateConfiguration indexes adapter->multisampleData with the unvalidated settings value VideoMultisample (heap OOB read) | UB: minimal fix (#143) |
+| F-157 | `src/ext/path_query_first/path_query_first.cpp:45` | System::Thread::_runFlags is a plain uint32 that the worker read-modify-writes while RequestFirst / RequestPath read it after Unlock (lost Start, data race) | UB: minimal fix (#148) |
+| F-159 | `src/game/Action/consumerawmaterial.cpp:302` | ConsumeRawMaterial(storage) ctor leaves the bool _field38 indeterminate; AddMaterial / AbstractImpl / CheckEntity branch on it | UB: minimal fix (#139) |
+| F-160 | `src/game/Action/moveto.cpp:128` | MoveTo float-to-int cell conversion is UB for out-of-range positions (saved destination NaN / \|x\| > 2^31) | UB: minimal fix (#139) |
+| F-162 | `src/game/Component/citizencomponent.cpp:288` | CitizenComponent::Update indexes CitizenDescription::coldRate[3] with the saved clothingLevel and no bound | UB: minimal fix (#125) |
+| F-165 | `src/game/Goal/statvaluedispatch.cpp:604` | StatGoal::SumProductionWindow: ((year - statSubType) - 1) * 0x30 is int32 signed overflow for out-of-range serialized statSubType | UB: minimal fix (#132) |
+| F-168 | `src/platform/win/file_win.cpp:130` | FormatLocalDateTime ignores both conversion results, so a failed FILETIME conversion leaves the 0x100-wchar buffer uninitialised and WideString(buf) reads it (indeterminate read, possible over-read past the buffer) | UB: minimal fix (#147) |
+| F-171 | `src/render/dx11/devicedata.cpp:840` | Swap-chain rebuild reads refreshData[refreshRateIndex] of a different display mode after an Options resolution change (heap out-of-bounds read) | UB: minimal fix (#149) |
+
+## 31. The minimap's camera outline loses a side when a corner lies off the map
+
+**Symptom.** With the map window open, the yellow camera trapezoid misses one or two of its lines
+(usually the far edge or a far side) whenever a corner of the camera's ground footprint lies left of
+or above the minimap. In retail this happens with the camera near the map's left or top edge at the
+far zooms; with `ext.better_camera` (zoom up to 200 at the near tilt) the far corners lie well beyond
+the map in most views, so the far edge and a side are missing almost all the time at the far zooms.
+
+**Retail mechanism.** `FrustumOutlineElement::Draw` (`0x14006be90`) projects the frustum's four far
+corners onto z = 0 (`0x14006c5b0`) and draws the four sides with `SpriteContext::AddLine`
+(`0x18011cbe0`), always in the order 0-1, 1-3, 2-3, 2-0, inside a scissor set to the minimap rect.
+AddLine stores the two endpoints in the sprite record's x1, y1, x2, y2 and `AddSpriteDraw`'s scissor
+cull (`0x18011c920..0x18011c9a1`) treats them as a rectangle's min and max corners: it drops the record
+when `scissorX * scale > x2` (`0x18011c949 COMISS / JA 0x18011c9b4`), when `x1 > (scissorX + W) *
+scale` (`0x18011c966`), and the same for y. A line drawn from right to left whose second endpoint lies
+left of the scissor (or bottom to top, above it) is culled whole, although most of it is inside.
+
+**Proof it is retail.** The disassembly above (Runtime-x64.dll), which `SpriteContext::AddSpriteDraw`
+(`src/engine/ui/spritecontext.cpp`) and `FrustumOutlineElement::Draw`
+(`src/game/Component/frustumoutlineelement.cpp`) transcribe. Seen in game 2026-11-06 under
+`/profile:faithful` (every extension off) at retail's maximum zoom 130, camera pinned near the left
+map edge (`BANISHED_CAMERA_PIN=-160,-60,130,120`): corner 1 projects to x = -267 (the map spans -192 ..
+192) and the side 0-1, drawn toward it, is missing while the other three are drawn. In the town
+centre at zoom 130 all four corners are on the map and the outline is whole. With
+`ext.better_camera` at zoom 200 (yaw 30) two corners project to (-431, 93) and (144, 425): sides 0-1
+and 2-0 are missing.
+
+**Lever.** Clip each side to the minimap rect before AddLine, in
+`FrustumOutlineElement::Draw`; the cull itself is shared by every sprite and stays.
+
+**Fix.** `fix.minimap_outline_clip` (default ON, UI only, nothing saved): with the row on, each side is
+clipped to the minimap rect (Liang-Barsky, `src/ext/minimap_outline_clip/clip_rule.h`) and a side wholly
+off the map is not drawn; retail's four AddLines in the other arm. Unit tests:
+`tests/unit/ext_minimap_outline_clip_test.cpp`.
+
+## 32. A terrain decal under the water level keeps its dark underwater tint through the fog
+
+**Symptom.** In thick fog the whole view is washed grey, but a dark blue-grey band stays sharp along a
+bridge (and, more faintly, at docks and other buildings that lay a ground decal over water cells). It
+is the bridge's ground decal where it lies below the water level: the dark tint is not fogged, so it
+shows through the fogged water drawn over it. Without fog the same band reads as a shadow under the
+bridge and nobody notices.
+
+**Retail mechanism.** The bridge templates carry a `DecalDescription` (`Template/WoodBridge.rsc`:
+`Terrain/TiledDecals/StorageYardMaterial.rsc`, `_tiled`, `_initialAlpha = 0.5`), drawn in the Blended
+list with the terrain decal programs (`Material/TerrainTiledSnowDecal`, the pixel program
+`TerrainMaterial.srsl:TiledSnowDecal_ps`, which inherits `Decal.ps`). `Decal.ps` lights and fogs the
+decal colour first (`ComputeLighting`, whose last step is `lerp(lighting, fogColor, min(fog, fogMax))`)
+and only then tints it toward the underwater colour,
+`output.color.xyz = lerp(output.color.xyz, float3(0.025, 0.123, 0.19), saturate(underWaterAmount))`.
+Below the water level the underwater amount is 1, so the fogged colour is replaced by the constant dark
+blue: the fog never reaches it. The model programs do it the other way round (`OpaqueMaterial.srsl`
+`SnowWater.ps` tints in its `colormodifier`, before `ComputeLighting`), so the bridge's posts in the
+water fog correctly. The river and lake programs then draw over the decal and mix the frame copy back
+in by the frame alpha (`lerp(frameBuffer.xyz, lighting, frameBuffer.w)`), and the frame copy holds the
+unfogged tint.
+
+**Proof it is retail.** The pixel program is the retail one, read from the install. In a RenderDoc
+capture of a faithful run its DXBC fogs at instructions 40-42 (`mad ... _pc_.fogColor`,
+`min_sat r0.w, v2.z, _pc_.fogColor.w`, `mad`) and applies the underwater lerp after it at 43-45
+(`add r1.xyz, -r0.xyz, l(0.025, 0.123, 0.190)`, `mov_sat r0.w, v1.z`, `mad o0.xyz ...`). Seen in game
+2026-11-06 under `/profile:faithful` (every fix and extension off), with the fog forced thick (near 0,
+far 60) and a 117-cell wood bridge built by the tool harness (`BANISHED_TOOL_HARNESS=bridge
+BANISHED_BRIDGE_LONGEST=6 BANISHED_FINISH_BUILDS=200`, seed 12345). The faithful frame and the
+frame with the user's extension set (ambient occlusion, better water, shadow resolution, render
+culling and the rest) are the same. Pixel history at one pixel of the band: the terrain writes the
+fogged grey 0.725 (event 709), the bridge's tiled decal darkens it to (0.57, 0.59, 0.60) (event 1049,
+the last draw before the frame copy), and the water leaves (0.64, 0.65, 0.66) (event 1070).
+
+**Lever.** The decal pixel programs (`Decal.ps` and the programs that inherit it: `DecalDamage`,
+`TiledDecal`, `TiledDecalTunnel`, `TiledSnowDecal`): tint first, then fog, as the model programs do.
+They are retail's compiled programs from the install, so a fix would rewrite the installed DXBC at load
+(the FOLIAGE_AA bytecode-rewriter pattern, `docs/extensions/DESIGN.md` §3 rule 7), never ship a changed
+copy.
+
+**Fix.** `fix.decal_fog_order` (default ON, render only, takes effect at the next start; nothing is
+saved). As each pixel program loads, `src/render/common/decal_fog/decal_fog_rewrite.{h,cpp}` reads the
+installed DXBC and matches the flawed tail by structure, not by bytes: exactly one underwater tint
+(`add U.xyz, -F, l(0.025, 0.123, 0.19, *)`), directly after the fog lerp `mad F.xyz, f, D, L` and
+followed by `mov_sat u, v#.c` and `mad o#.xyz, u, U, F` (the tint writes the colour output, so it comes
+after the fog); f's last writer is `min_sat f, *, cbN[r].w` and D's a `mad D, -X, Y, cbN[r].xyz` on the
+same constant row (the fog amount, and the fog colour minus the lit colour); no flow control, and nothing
+after the tint reads what the four instructions wrote. Those four become six in two new temps:
+`T = lerp(L, tint, u)`, then `lerp(T, L + D, f)` (L + D is the fog colour retail's own lerp ends at), and
+the container is re-emitted with a fresh checksum, re-parsed and checked before use. Anything that does
+not match, or a copy the device refuses, keeps retail's bytes. On the installed game the rewrite takes
+20 permutations, four each of five programs (`Decal`, `DecalDamage`, two tiled-decal programs and
+`TiledSnowDecal`, told apart by their `_diffuse_` / `_tiles_` / `_damage_` / `_snow_` bindings); the eight
+other programs with the tint (the model and terrain programs) tint into a temp before fogging and are
+left alone. DX11 creates the shader from the copy (`PixelProgramData::PlatformCreate`), Vulkan converts
+the copy to SPIR-V (`companions.cpp` `CreateProgram`), Metal answers not supported
+(`DecalFogBackend::Supported`). Seen in game with the fog forced thick (near 0, far 60), the same bridge
+harness and pin as above: row off, the dark band; row on, the bridge's decal fades into the fog with
+the rest of the scene; without the forced fog, the shadow under the bridge is unchanged. Unit tests:
+`tests/unit/ext_decal_fog_test.cpp` (synthetic programs in two register layouts, evaluated before and
+after).

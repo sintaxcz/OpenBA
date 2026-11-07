@@ -119,7 +119,9 @@
 #include "graphics/skin_memo.h"   // SKINMEMO: Renderer::Draw opens the bone memo's scope
 #include "graphics/Scene.h"   // ENDGAME B.3.5 caller batch: Graphics::Scene
 #include "graphics/Light.h"   // B3X W0: Light::DrawShadowMap / DrawLight by name
+#include "graphics/SunLight.h"   // ext.staggered_passes: the shadow hold's emit flag (NOT RETAIL)
 #include "graphics/Material.h"
+#include "graphics/material_binding_bounds.h"   // review S-003: the bindings BuildParameters appends
 #include "video/Context.h"
 #include "video/Device.h"          // B.4: Video::RenderBuffer::width / height
 #include "video/ImageBuffer.h"     // B.4: Video::ImageBuffer::_kind
@@ -650,6 +652,18 @@ void MaterialInstance::BuildParameters() {
             // the material's arrays; transcribed unhoisted for that reason.
             v.shaderSlot = rtgfxbig::PassPixelProgram(this, pass)->_textures._data[i].dest;
 
+            // NOT RETAIL (review S-003): a binding Setup cannot apply is not appended
+            // (material_binding_bounds.h). Retail appends it unchecked.
+            static_assert(sizeof(Video::Context::_imageBuffers) ==
+                              MaterialBindingBounds::kTextureSlots * sizeof(void*),
+                          "S-003: the texture slot bound is Context::_imageBuffers");
+            static_assert(sizeof(Video::Context::PixelConstantStaging::material) ==
+                              MaterialBindingBounds::kConstantSlots * 4 * sizeof(float),
+                          "S-003: the constant slot bound is PixelConstantStaging::material");
+            if (!MaterialBindingBounds::IsTextureBinding(v.sourceIndex, v.shaderSlot)) {
+                continue;
+            }
+
             // `_parameters._data` is RE-READ here (MOV RSI,[RBP] at 0x180103563)
             // rather than kept from the top of the pass loop.
             RtGraphics::MaterialParameterSet* const set = &_parameters[pass];
@@ -676,6 +690,11 @@ void MaterialInstance::BuildParameters() {
             }
 
             v.shaderSlot = rtgfxbig::PassPixelProgram(this, pass)->_constants._data[i].dest;
+
+            // NOT RETAIL (review S-003): as in the textures arm.
+            if (!MaterialBindingBounds::IsConstantBinding(v.sourceIndex, v.shaderSlot)) {
+                continue;
+            }
 
             RtGraphics::MaterialParameterSet* const set = &_parameters[pass];
             // retail 0x1801037ec, kSpec_Binding8 — trait-equivalent, same as
@@ -1031,10 +1050,17 @@ void Renderer::Draw(Video::Context& context, float alpha, const Scene& sceneRef,
     // park (graphics/Scene.h). Null unless the helper pool exists.
     if (Scene::_extDrawPass1End != nullptr) Scene::_extDrawPass1End();
 
+    // EXT SEAM (NOT RETAIL, issue #253): ext.staggered_passes. Pass 1 just decided whether the
+    // sun holds its map; this thread emits the same frame (false unless the row is on).
+    SunLight::ExtShadowHoldEmit(SunLight::ExtTakeShadowHeld());
+
     // ---------------- PASS 2: emit, BACKWARD ------------------------------
     // EXT SEAM (NOT RETAIL, docs/extensions/AO.md): ext.ambient_occlusion (renderer_ext_ao.h), read once
     // per frame; null (retail) unless the game's draw armed it for this call.
     const ExtAoFrame* const extAo = _extAo;
+    // EXT SEAM (NOT RETAIL, docs/extensions/handins/MAPOVERLAYS.md): the ground draw (Camera.h), read once per
+    // frame; null (retail) unless the game's draw armed it for this call.
+    const ExtGroundDrawFn extGround = _extGroundDraw;
     for (int64_t si = static_cast<int32_t>(_sceneGroups._size) - 1; si >= 0; --si) {
         // `_data` is RE-READ at the top of every iteration (MOV RBP,[RDI] at
         // 0x180104d60) while the byte offset is carried in RBX and decremented.
@@ -1103,11 +1129,19 @@ void Renderer::Draw(Video::Context& context, float alpha, const Scene& sceneRef,
             if (k == 0 && extAo != nullptr && e->_shader == 0 &&
                 e->_renderBuffer == context._defaultRenderBuffer)
                 ExtAoAfterOpaque(context, *extAo, *e);
+            // EXT SEAM (NOT RETAIL, docs/extensions/handins/MAPOVERLAYS.md): the ground draw, at the same point
+            // of the same entry, after the AO pass.
+            if (k == 0 && extGround != nullptr && e->_shader == 0 &&
+                e->_renderBuffer == context._defaultRenderBuffer)
+                extGround(context, e->_camera);
         }
     }
+    SunLight::ExtShadowHoldEmit(false);   // NOT RETAIL (ext.staggered_passes): this frame's emit is over
 }
 
 // NOT RETAIL: the ext.ambient_occlusion seam (Camera.h, renderer_ext_ao.h).
 const ExtAoFrame* Renderer::_extAo = nullptr;
+// NOT RETAIL: the ground-draw seam (Camera.h).
+Renderer::ExtGroundDrawFn Renderer::_extGroundDraw = nullptr;
 
 }  // namespace Graphics

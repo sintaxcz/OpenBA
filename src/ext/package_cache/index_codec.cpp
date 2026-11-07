@@ -23,6 +23,7 @@ constexpr size_t kHeaderBytes = 12;        // magic, node count, package count
 constexpr size_t kRecordBytes = 21;        // key pack, key file, value pack, value file, balance, height, children
 constexpr uint8_t kHasLeft = 1;
 constexpr uint8_t kHasRight = 2;
+constexpr uint32_t kMaxDepth = 64;         // Decode: deeper than any AVL tree of 2^31 nodes
 
 void PutU32(std::vector<uint8_t>& out, uint32_t v) {
     const size_t at = out.size();
@@ -161,6 +162,7 @@ bool Decode(const std::vector<uint8_t>& payload, const std::vector<PackView>& pa
 
     struct Open {
         Node* node;
+        uint32_t depth;    // the node's level, the root's 1
         uint8_t pending;   // kHasLeft / kHasRight still to attach
     };
     std::vector<Open> stack;
@@ -176,14 +178,31 @@ bool Decode(const std::vector<uint8_t>& payload, const std::vector<PackView>& pa
             FreeAll(tree);
             return false;
         }
+        // The value is an entry of the key's own path (review F-241): Encode writes it so, and a
+        // value naming another entry would resolve the key to that other file.
+        const char* const keyName = packs[keyPack].entries[keyFile].name._data;
+        const char* const valueName = packs[valuePack].entries[valueFile].name._data;
+        if (rtcrt::StrICmp(keyName, valueName) != 0) {
+            FreeAll(tree);
+            return false;
+        }
 
         Node* parent = nullptr;
         bool asLeft = false;
+        uint32_t depth = 1;
         if (i != 0) {
             Open& top = stack.back();
             parent = top.node;
+            depth = top.depth + 1;
             asLeft = (top.pending & kHasLeft) != 0;
             top.pending &= static_cast<uint8_t>(asLeft ? ~kHasLeft : ~kHasRight);
+        }
+        // The shape is the payload's: a chain of any length would pass every other check, and the
+        // recursive SubtreeFree / the IndexFind descent go once per level. An AVL tree of 2^31 nodes
+        // is under 46 levels high, so a deeper one is refused (FreeAll is still shallow here).
+        if (depth > kMaxDepth) {
+            FreeAll(tree);
+            return false;
         }
 
         const RtIO::PackfileIndexPair pair{ packs[keyPack].entries[keyFile].name, { valuePack, valueFile } };
@@ -205,7 +224,7 @@ bool Decode(const std::vector<uint8_t>& payload, const std::vector<PackView>& pa
         if (!stack.empty() && stack.back().pending == 0)
             stack.pop_back();
         if (children != 0)
-            stack.push_back(Open{ node, children });
+            stack.push_back(Open{ node, depth, children });
     }
     if (!stack.empty() || !InOrderStrict(tree.root)) {
         FreeAll(tree);

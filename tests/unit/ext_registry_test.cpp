@@ -51,7 +51,9 @@ UNIT_TEST(ext_registry_table_shape) {
                            "firefighter_wells", "unresolved_seeds",
                            "commute_cost", "nomad_arrival", "mods_persist",
                            "save_failure_notice", "boat_reach_notice", "cancel_refund",
-                           "autotrade_free_goods", "input_fetch_room", "stranded_wade"}) {
+                           "autotrade_free_goods", "input_fetch_room", "stranded_wade",
+                           "debug_spawn_origin", "statusbar_empty_town",
+                           "stream_free_wait", "minimap_outline_clip", "decal_fog_order"}) {
         const Ext::Entry& e = E(id);
         CHECK(e.tier == Ext::Tier::Fix);
         CHECK(e.cls == Ext::Class::None);
@@ -72,17 +74,23 @@ UNIT_TEST(ext_registry_table_shape) {
         // The unit_* test rows keep OFF: the lock tests below start from nothing on.
         // eye_camera is class A but changes how the game is played: the player's call, OFF.
         // no_fog is class A but changes how the map looks: the player's call, OFF. So is show_grid.
+        // fps_counter is class A but adds the toolbar's extension button: the player's call, OFF (FPSCOUNTER).
+        // building_finder is class A but adds a tab to the extension window: OFF (BUILDINGFINDER).
         // texture_quality is class A but lowers texture detail: the player's call, OFF (TEXQUALITY).
         // phone_menu is class A but moves the desktop menu: OFF; the Android first run turns it on (PHONEMENU).
         // fps_cap is class A but caps a desktop's game, retail's uncapped: OFF; the Android first run turns it on (P8).
         // touch_mode is class A but puts camera controls over a desktop's game: OFF; the Android first run turns it on.
         // touch_pointer is class A but takes a touch screen's fingers from the mouse: OFF; the Android first run turns it on.
+        // staggered_passes is class A but lets shadows and reflections trail by a frame: the player's call, OFF (issue #253).
         if (e.tier == Ext::Tier::Extension && std::strncmp(e.id, "unit_", 5) != 0)
             CHECK(e.defaultOn == (e.cls == Ext::Class::A && std::strcmp(e.id, "eye_camera") != 0 &&
                                   std::strcmp(e.id, "no_fog") != 0 && std::strcmp(e.id, "show_grid") != 0 &&
+                                  std::strcmp(e.id, "fps_counter") != 0 &&
+                                  std::strcmp(e.id, "building_finder") != 0 &&
                                   std::strcmp(e.id, "texture_quality") != 0 &&
                                   std::strcmp(e.id, "phone_menu") != 0 && std::strcmp(e.id, "fps_cap") != 0 &&
-                                  std::strcmp(e.id, "touch_mode") != 0 && std::strcmp(e.id, "touch_pointer") != 0));
+                                  std::strcmp(e.id, "touch_mode") != 0 && std::strcmp(e.id, "touch_pointer") != 0 &&
+                                  std::strcmp(e.id, "staggered_passes") != 0));
     }
     CHECK(!Ext::ValidId("a.b"));
     CHECK(!Ext::ValidId("Abc"));
@@ -98,6 +106,12 @@ UNIT_TEST(ext_registry_table_shape) {
     // Fixes come first in the table (the menu order).
     CHECK(Ext::EntryAt(0).tier == Ext::Tier::Fix);
     CHECK(Ext::EntryAt(Ext::EntryCount() - 1).tier == Ext::Tier::Extension);
+}
+
+// The Extensions dialog has Ext::kMaxEntries rows and drops the entries past them: the table must fit
+// (it outgrew the dialog's former 64 rows at 90 entries, and the newest default-on rows went missing).
+UNIT_TEST(ext_registry_fits_the_extensions_dialog) {
+    CHECK(Ext::EntryCount() <= Ext::kMaxEntries);
 }
 
 UNIT_TEST(ext_registry_absent_keys_take_defaults) {
@@ -371,4 +385,30 @@ UNIT_TEST(ext_registry_duplicate_key_last_line_wins) {
     s = ResolveText("profile=faithful\nprofile=all\n", nullptr, &r);
     CHECK(r.profile == Ext::Profile::All);
     CHECK(s.fix.icon_slide && s.ext.unit_b && s.ext.unit_c);
+}
+
+// Review F-262: the fix rows another thread reads (the save job, the renderer's recovery) are read
+// through Ext::LiveFix()'s atomics, which follow every write of the row: Install, the dialog's
+// SetRequested (live under a game's lock, fixes are never locked) and UnlockForGame.
+UNIT_TEST(ext_registry_live_fixes_follow_the_rows) {
+    const std::memory_order r = std::memory_order_relaxed;
+    Ext::Install(ResolveText(""), Ext::Profile::PerEntry, false);
+    CHECK(Ext::LiveFix().save_failure_notice.load(r) == Ext::Fix().save_failure_notice);
+    CHECK(Ext::LiveFix().boot_device_lost.load(r) == Ext::Fix().boot_device_lost);
+    const Ext::State off = ResolveText("fix.save_failure_notice=0\nfix.boot_device_lost=0\n");
+    Ext::Install(off, Ext::Profile::PerEntry, false);
+    CHECK(!Ext::LiveFix().save_failure_notice.load(r));
+    CHECK(!Ext::LiveFix().boot_device_lost.load(r));
+    int owner = 0;
+    Ext::LockForGame(&owner);
+    CHECK(Ext::SetRequested(E("save_failure_notice"), true));
+    CHECK(Ext::LiveFix().save_failure_notice.load(r));
+    CHECK(!Ext::LiveFix().boot_device_lost.load(r));
+    CHECK(Ext::SetRequested(E("boot_device_lost"), true));
+    CHECK(Ext::LiveFix().boot_device_lost.load(r));
+    CHECK(Ext::SetRequested(E("save_failure_notice"), false));
+    Ext::UnlockForGame(&owner);
+    CHECK(!Ext::LiveFix().save_failure_notice.load(r));
+    CHECK(Ext::LiveFix().boot_device_lost.load(r));
+    Ext::Install(ResolveText(""), Ext::Profile::PerEntry, false);
 }

@@ -149,7 +149,9 @@ namespace Audio {
 // reference_ghidra_c_output_vs_disassembly.md; the disassembly above is what
 // this body was written from.)
 // ---------------------------------------------------------------------------
-void Device::FreeChannelPlatform(int32_t index) {
+// Not analysed (clang -Wthread-safety): retail takes and releases the Stream lock on two separate
+// reads of the same test, which the analysis cannot pair.
+void Device::FreeChannelPlatform(int32_t index) NO_THREAD_SAFETY_ANALYSIS {
     if (_xaudio2 == nullptr)                          // 1800de6f6  platform down
         return;
 
@@ -200,12 +202,12 @@ void Device::Update(const System::Time& /*time — never read*/) {
         AudioChannel* ch = &_channels[i];
         // Retail tests the LOW BYTE of the dword (`TEST byte ptr [..],0x2`)
         // and clears the whole dword; both are reproduced.
-        if ((ch->flags & 2u) == 0) continue;
+        if ((ch->LoadFlags() & 2u) == 0) continue;
 
         FreeChannelPlatform(i);
 
         Callback cb = ch->onComplete;
-        ch->flags &= 0xFFFFFFFCu;
+        ch->AndFlags(0xFFFFFFFCu);
         ch->source = nullptr;
         if (cb)
             cb(ch, ch->userData, ch->userValue);
@@ -273,9 +275,10 @@ void Device::StopPlatform(int32_t index) {
     Audio::Stream* stream = &_stream;
 
     // The wake: only when the source wants the stream lock AND the stream
-    // worker is mid-pass (Thread runFlags bit 0, Device+0xa08).
-    if (NeedsStreamLock(ch->source) && (stream->_runFlags & 1) != 0) {
-        stream->_stopping = 1;                        // Device+0xa80
+    // worker is mid-pass (Thread runFlags bit 0, Device+0xa08). NOT RETAIL (review
+    // F-137): the bit test and the `_stopping` store are atomic (Stream::Play).
+    if (NeedsStreamLock(ch->source) && stream->IsWorking()) {
+        __atomic_store_n(&stream->_stopping, uint8_t{1}, __ATOMIC_RELAXED);   // Device+0xa80
         Platform::EventSet(stream->_wakeEvent);       // Device+0xa40  SetEvent
     }
 
@@ -284,7 +287,7 @@ void Device::StopPlatform(int32_t index) {
     }
 
     // Unguarded on purpose - see the banner above.
-    pc.channel->flags |= 2u;
+    pc.channel->OrFlags(2u);
 }
 
 // ---------------------------------------------------------------------------
@@ -360,7 +363,7 @@ void Device::Stop(AudioChannel* channelPtr) {
     // ---- the reap epilogue, identical to Device::Update's ------------------
     AudioChannel* ch = &_channels[index];
     Callback cb = ch->onComplete;
-    ch->flags &= 0xFFFFFFFCu;
+    ch->AndFlags(0xFFFFFFFCu);
     ch->source = nullptr;
     if (cb)
         cb(ch, ch->userData, ch->userValue);

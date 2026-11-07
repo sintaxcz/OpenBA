@@ -39,7 +39,7 @@ bool ParseEmbedded(const char* path, File& f) {
 }  // namespace
 
 UNIT_TEST(ext_rsc_text_embedded_files) {
-    CHECK(kEmbeddedCount == 15);
+    CHECK(kEmbeddedCount == 20);
     CHECK(Embedded("Dialog/Extensions.rsc") != nullptr);
     CHECK(Embedded("Dialog/EnhancedOptions.rsc") != nullptr);
     CHECK(Embedded("Dialog/ExtensionsStringTable.rsc") != nullptr);
@@ -55,6 +55,11 @@ UNIT_TEST(ext_rsc_text_embedded_files) {
     CHECK(Embedded("Dialog/PhoneScroll.rsc") != nullptr);
     CHECK(Embedded("Dialog/TownScreenshotPage.rsc") != nullptr);
     CHECK(Embedded("Dialog/ShowGridPage.rsc") != nullptr);
+    CHECK(Embedded("Dialog/FpsCounterPage.rsc") != nullptr);
+    CHECK(Embedded("Dialog/BuildingFinderPage.rsc") != nullptr);
+    CHECK(Embedded("Dialog/FavoritesWindow.rsc") != nullptr);
+    CHECK(Embedded("Dialog/FullscreenMode.rsc") != nullptr);
+    CHECK(Embedded("Dialog/MapOverlays.rsc") != nullptr);
 }
 
 UNIT_TEST(ext_rsc_text_parse_extensions) {
@@ -66,7 +71,7 @@ UNIT_TEST(ext_rsc_text_parse_extensions) {
         const Field* flags = dlg->body.Find("_flags");
         CHECK(flags && !flags->isArray && flags->tokens.size() == 3 && flags->tokens[1].text == "PauseGame");
         const Field* refs = dlg->body.Find("_references");
-        CHECK(refs && refs->isArray && refs->tokens.size() == 4 && refs->tokens[0].quoted);
+        CHECK(refs && refs->isArray && refs->tokens.size() == 5 && refs->tokens[0].quoted);
         const Field* tpl = dlg->body.Find("_templates");
         CHECK(tpl && tpl->isArray && tpl->tokens.size() == 1 && tpl->tokens[0].text == "entryRow");
     }
@@ -152,8 +157,8 @@ UNIT_TEST(ext_rsc_text_parse_extensions) {
     // The bases the in-game pages derive from (RestrictedFoodsPage.rsc, ItemPriorityPage.rsc) stay.
     CHECK(f.Find("entryList") && f.Find("tableList") && f.Find("tableMods"));
     // 46 + fix.save_failure_notice's box (saveFailed, noticeSaveFailed) + 2: buttonGameFiles and labelGameFiles
-    // (issue #96)
-    CHECK(f.objects.size() == 50);
+    // (issue #96) + 2: fix.mods_persist's in-game warning (modsInGame, noticeModsInGame)
+    CHECK(f.objects.size() == 52);
 }
 
 UNIT_TEST(ext_rsc_text_parse_enhanced_and_strings) {
@@ -173,7 +178,7 @@ UNIT_TEST(ext_rsc_text_parse_enhanced_and_strings) {
     CHECK(page && page->body.Find("_content") &&
           page->body.Find("_content")->tokens[0].text == "enhancedOptionsTable");
     const Object* table = e.Find("enhancedOptionsTable");
-    CHECK(table && table->body.Find("_items") && table->body.Find("_items")->blocks.size() == 37);   // nineteen labels, eighteen controls (BETTERWATER: better water; NATURAL_GROWTH.md: natural tree growth; COMPRESSAO: the cache size and, under it, its button; TEXQUALITY: texture quality; P8: render scale, frame rate cap; TOUCHMODE: touch controls; P11b: touch pointer; issue #96: the "Touch screen" and "General" headers, camera pad, placement bar, screen edge margin; the reporter's follow-up: corner camera buttons)
+    CHECK(table && table->body.Find("_items") && table->body.Find("_items")->blocks.size() == 43);   // twenty-two labels, twenty-one controls (BETTERWATER: better water; WINTERICE: better ice; BETTERCLOUDS: better clouds; SHARP_SPRITES: Sharp UI; NATURAL_GROWTH.md: natural tree growth; COMPRESSAO: the cache size and, under it, its button; TEXQUALITY: texture quality; P8: render scale, frame rate cap; TOUCHMODE: touch controls; P11b: touch pointer; issue #96: the "Touch screen" and "General" headers, camera pad, placement bar, screen edge margin; the reporter's follow-up: corner camera buttons)
     // Issue #96: one combo item per choice of its value key (registry.cpp), in the key's order.
     const char* const keyCombos[][2] = {{"touchPadItems", "touch_mode_pad_scale"},
                                         {"touchCameraButtonItems", "touch_mode_camera_buttons"},
@@ -205,8 +210,9 @@ UNIT_TEST(ext_rsc_text_parse_enhanced_and_strings) {
     // note), + 4 for the picture's outline check box and the Show in town button (each with its tip), + 2 for
     // the picture's main-job check box and its tip, + 10 for the Grid page, + 1 for
     // fix.save_failure_notice's message, + 2 for the Game files menu button and its tip (issue #96),
-    // + 1 for the touch pointer bar's Shift tip
-    CHECK(strings && strings->blocks.size() == 132);
+    // + 1 for the touch pointer bar's Shift tip, + 1 for fix.mods_persist's in-game warning, + 9 for the FPS
+    // page, + 18 for the Find Buildings page and its favorites window, + 52 for the map window's overlay views
+    CHECK(strings && strings->blocks.size() == 142 + 18 + 52);
     if (strings) {
         // The Extensions dialog's two tab captions.
         int tabKeys = 0;
@@ -388,6 +394,85 @@ UNIT_TEST(ext_rsc_text_element_flags) {
     CHECK(label && label->body.Find("_minWidth") == nullptr);
 }
 
+UNIT_TEST(ext_rsc_text_parse_fps_counter_page) {
+    File f;
+    CHECK(ParseEmbedded("Dialog/FpsCounterPage.rsc", f));
+    CHECK(f.Find("resource") == nullptr);   // a page, not a dialog: the root object is pageFpsCounter
+    const Object* page = f.Find("pageFpsCounter");
+    CHECK(page && page->type == "RibbonDescription");
+    const char* const values[] = { "textFpsCounterCurrentValue", "textFpsCounterAverageValue",
+                                   "textFpsCounterMinimumValue", "textFpsCounterMaximumValue",
+                                   "textFpsCounterMeasuredValue" };
+    for (const char* name : values) {
+        const Object* v = f.Find(name);
+        CHECK(v && v->type == "TextDescription");
+    }
+    const Object* reset = f.Find("buttonFpsCounterReset");
+    CHECK(reset && reset->type == "ButtonDescription");
+    CheckKnownTypes(f, "FpsCounterPage.rsc");
+}
+
+UNIT_TEST(ext_rsc_text_parse_building_finder_page) {
+    File f;
+    CHECK(ParseEmbedded("Dialog/BuildingFinderPage.rsc", f));
+    CHECK(f.Find("resource") == nullptr);   // a page, not a dialog: the root object is pageBuildingFinder
+    const Object* page = f.Find("pageBuildingFinder");
+    CHECK(page && page->type == "RibbonDescription");
+    const Object* search = f.Find("editFinderSearch");
+    CHECK(search && search->type == "EditDescription");
+    CHECK(f.Find("tableFinderAll") && f.Find("ribbonFinderCell") && f.Find("buttonFinderOpenFav"));
+    CHECK(f.Find("buttonFinderKey") && f.Find("textFinderKey"));
+    CHECK(f.Find("buttonFinderPick") && f.Find("buttonFinderStar") && f.Find("buttonFinderClear"));
+    CheckKnownTypes(f, "BuildingFinderPage.rsc");
+}
+
+UNIT_TEST(ext_rsc_text_parse_favorites_window) {
+    File w;
+    CHECK(ParseEmbedded("Dialog/FavoritesWindow.rsc", w));
+    CHECK(w.Find("dialogRoot") && w.Find("tableFavoritesWindow") && w.Find("textFavoritesWindowNote"));
+    CHECK(w.Find("buttonFavoriteIcon") && w.Find("imageFavoriteIcon") && w.Find("buttonFavoritesOpenPage"));
+    CheckKnownTypes(w, "FavoritesWindow.rsc");
+}
+
+// ext.fullscreen_mode's Video tab cell: the group fullscreen_mode.cpp TakeCell expects, combo first, the
+// checkbox's slot second.
+UNIT_TEST(ext_rsc_text_parse_fullscreen_mode) {
+    File f;
+    CHECK(ParseEmbedded("Dialog/FullscreenMode.rsc", f));
+    const Object* cell = f.Find("fullscreenModeCell");
+    CHECK(cell && cell->type == "GroupDescription");
+    const Object* combo = f.Find("comboFullscreenMode");
+    CHECK(combo && combo->type == "ComboDescription");
+    const Object* slot = f.Find("fullscreenModeSlot");
+    CHECK(slot && slot->type == "GroupDescription");
+    // The combo's items: a StringTable, as EnhancedOptions.rsc's combos (CheckKnownTypes lists the
+    // element descriptions only, so it is not run on this file).
+    const Object* items = f.Find("fullscreenModeItems");
+    CHECK(items && items->type == "StringTable");
+}
+
+// ext.map_overlays's views in the map window: the row map_window.cpp injects at userGroup0, the map's cell, the
+// column of view buttons, the pages group, the four page kinds and the names the controller looks up in them.
+UNIT_TEST(ext_rsc_text_parse_map_overlays) {
+    File f;
+    CHECK(ParseEmbedded("Dialog/MapOverlays.rsc", f));
+    CHECK(f.Find("resource") == nullptr);   // not a dialog: retail's map window hosts it
+    const Object* column = f.Find("ribbonMapOverlays");
+    CHECK(column && column->type == "RibbonDescription");
+    CHECK(f.Find("groupMapOverlaysMapSlot") && f.Find("columnMapOverlaysViews"));
+    const Object* button = f.Find("buttonMapOverlaysTab");
+    CHECK(button && button->type == "ButtonDescription");
+    const Object* pages = f.Find("groupMapOverlaysPages");
+    CHECK(pages && pages->type == "GroupDescription");
+    CHECK(f.Find("pageMapOverlaysMap") && f.Find("pageMapOverlaysResource") && f.Find("pageMapOverlaysKind") &&
+          f.Find("pageMapOverlaysTraffic"));
+    CHECK(f.Find("comboMapOverlaysCategory") && f.Find("comboMapOverlaysResource") &&
+          f.Find("comboMapOverlaysKind") && f.Find("rowMapOverlaysMonths") && f.Find("sliderMapOverlaysMonths") &&
+          f.Find("sliderMapOverlaysScale") && f.Find("ribbonMapOverlaysRamp") &&
+          f.Find("textMapOverlaysLegendMax") && f.Find("checkMapOverlaysTerrain"));
+    CheckKnownTypes(f, "MapOverlays.rsc");
+}
+
 UNIT_TEST(ext_rsc_text_parse_show_grid_page) {
     File f;
     CHECK(ParseEmbedded("Dialog/ShowGridPage.rsc", f));
@@ -561,4 +646,32 @@ UNIT_TEST(ext_rsc_text_load_notices_are_embedded) {
         const Object* o = f.Find(p.substr(colon + 1).c_str());
         CHECK(o != nullptr && o->type == "Dialog" && o->base == "SaveLoad.rsc:modsMissing");
     }
+}
+
+// F-038 (review 2026-11-03): ParseBlock -> ParseField -> ParseBlock recursed once per
+// `T f[{` level with no cap, so 5 bytes of hostile text per level overflowed the stack.
+// The embedded files nest blocks at most 2 deep; the parser refuses past 64.
+UNIT_TEST(ext_rsc_text_nesting_depth_limit) {
+    auto nested = [](int levels) {
+        std::string s = "A b {";
+        for (int i = 0; i < levels; ++i)
+            s += "T f[{";
+        for (int i = 0; i < levels; ++i)
+            s += "}]";
+        s += "}";
+        return s;
+    };
+    std::string err;
+    File f;
+    const std::string ok = nested(63);   // 64 blocks: the object body plus 63 array elements
+    CHECK(Parse(ok.data(), ok.size(), f, err));
+    File g;
+    const std::string deep = nested(64);   // 65 blocks
+    CHECK(!Parse(deep.data(), deep.size(), g, err) && err.find("nested too deep") != std::string::npos);
+    // The fuzz input (scratchpad/crashes/rsc_text/deep_nesting_50000): "A b {" + "T f[{" x 50000.
+    std::string hostile = "A b {";
+    for (int i = 0; i < 50000; ++i)
+        hostile += "T f[{";
+    File h;
+    CHECK(!Parse(hostile.data(), hostile.size(), h, err) && err.find("nested too deep") != std::string::npos);
 }

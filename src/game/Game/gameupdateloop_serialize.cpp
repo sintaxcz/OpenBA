@@ -52,6 +52,7 @@
 #include "Entity/EntityList.h"
 #include "Game/PlayerToolManager.h"
 #include "Game/Minimap.h"
+#include "Game/minimap_bounds.h"   // review S-009: the counts Minimap::Serialize accepts on load
 #include "Game/WeatherSimulation.h"
 #include "Game/WeatherParticleGeometry.h"   // the effect slots' class
 #include "Game/EventLog.h"            // B4 GAME-a: the pointees the serializer reads by name
@@ -211,9 +212,8 @@ void EventLog::Serialize(IO::Stream& stream) {
 // serialized via the already-ported 0x1400194a0); +0x10/+0x14 ints; +0x18
 // float; +0x1c Vector4; +0x2c,+0x30,+0x44,+0x48 floats; +0x4c int; +0x50
 // {geo*}[count at +0x58] active-effect slots. On load an active slot is
-// re-created via the ported WeatherEffect_SetEnabled(sim, i, 1) — NOTE: the
-// retail create (FUN_1400942c0) also spawns the effect's ambient-audio entity;
-// that half is not in the port yet (audio ambience will be silent after load).
+// re-created via the ported WeatherEffect_SetEnabled(sim, i, 1), which also
+// spawns the effect's ambient-audio entity, as retail's 0x1400942c0 does.
 // Then each active geo's +0xc4 (intensity) and +0xc0 floats round-trip.
 void WeatherSimulation::Serialize(IO::Stream& stream) {
     IO::Serializer ser(stream, 0);
@@ -339,8 +339,11 @@ static void IbpTree_Serialize_e470(TrackedEntityNode** root, int32_t* countField
             int a = 0, b = 0;
             bool used = false;
             keyPtr.Object::InternalBasePtr::Serialize(*serializer);
-            ComponentEntity* key = keyPtr.Get();
-            if (key && !::Object::IsDerivedFromNullSafe(key, s_tidCompEnt)) key = nullptr;   // 0x14002e4dd: no type-id test (row 1164)
+            // NOT RETAIL (F-143): null and type tests on the held Internal*; the
+            // ComponentEntity* is taken only once they pass. The answer is the same.
+            ComponentEntity* key = nullptr;
+            if (!keyPtr.IsNull() && ::Object::IsDerivedFromNullSafe(keyPtr, s_tidCompEnt))   // 0x14002e4dd: no type-id test (row 1164)
+                key = keyPtr.Get();
             serializer->Serialize(a, nullptr);
             serializer->Serialize(b, nullptr);
             serializer->Serialize(used, nullptr);
@@ -400,7 +403,7 @@ static void IbpTree_Serialize_e470(TrackedEntityNode** root, int32_t* countField
         while (cur->left) cur = cur->left;
         while (cur) {
             cur->key.InternalBasePtr::Serialize(*serializer);   // InternalBasePtr::Serialize (0x14002e470)
-            if (cur->key.Get() && !::Object::IsDerivedFromNullSafe(cur->key.Get(), s_tidCompEnt))   // 0x14002e6cf: no type-id test (row 1164)
+            if (!cur->key.IsNull() && !::Object::IsDerivedFromNullSafe(cur->key, s_tidCompEnt))   // 0x14002e6cf: no type-id test (row 1164)
                 cur->key = nullptr;
             serializer->Serialize(cur->x, nullptr);
             serializer->Serialize(cur->y, nullptr);
@@ -445,7 +448,9 @@ void PlayerToolManager::Serialize(IO::Stream& stream) {
         if (!IsSaving(&stream)) {
             cameraViews.SetSize(count);   // 0x14002e000
         }
-        for (uint32_t i = 0; i < (uint32_t)count; i++) {
+        // Retail 0x140102a19..0x140102a25: MOV EAX,[count] / TEST EAX,EAX / JLE past the
+        // loop / MOV EDI,EAX: a signed count, so a save's count <= 0 runs no element.
+        for (int i = 0; i < count; i++) {
             PlayerCameraView& e = cameraViews[i];
             // ?Serialize@Vector3@Math@@QEAAXAEAVSerializer@IO@@@Z  retail 0x1800150e0
             e.position.Serialize(ser);
@@ -480,6 +485,19 @@ void Minimap::Serialize(IO::Stream& stream) {
     ser.Serialize(n, terrainPixels._data, nullptr);
 
     ser.Serialize(size, nullptr);
+
+    // NOT RETAIL (review S-009): retail trusts the three counts; arrays that do not hold
+    // size * size pixels each are refused before the upload reads them
+    // (MinimapBounds::PixelsCoverSize), through retail's own fatal error box, as Map::Serialize
+    // refuses a damaged map (review F-026).
+    if (!IsSaving(&stream) && !MinimapBounds::PixelsCoverSize(size, overlayPixels._size, terrainPixels._size)) {
+        fprintf(stderr, "[Minimap::Serialize] FATAL: edge %d, %d overlay / %d terrain pixels\n", size,
+                overlayPixels._size, terrainPixels._size);
+        fflush(stderr);
+        System::Error::SetText("This save's minimap is damaged and cannot be loaded.", true);
+        System::Error::Display();   // the box; _stopApplication then exits the process
+        return;
+    }
 
     if (!IsSaving(&stream)) {
         Minimap_CreateAndUpload(this);
@@ -615,7 +633,10 @@ void GameUpdateLoop::SerializeAllHead(IO::Stream& stream, SerializeScope& scope)
             if (refCount > 0 && refCount < (1 << 20)) {
                 extFactory->EnableReferenceMode(false);
                 int loaded = 0, missing = 0;
-                for (int id = 0; id < refCount; ++id) {
+                // SerializeReferenceTable numbers the table from ONE (its write path,
+                // 1800bcdf4), so the ids a save holds are 1..refCount; id 0 is never
+                // in the map and starting there would skip the last resource.
+                for (int id = 1; id <= refCount; ++id) {
                     void* fname[1] = { nullptr };
                     System::Filename* path = ::new (static_cast<void*>(fname)) System::Filename(
                         extFactory->GetPathForReferenceId((unsigned int)id));
@@ -676,8 +697,8 @@ void GameUpdateLoop::SerializeAllHead(IO::Stream& stream, SerializeScope& scope)
     m_scenarioInstance.Object::InternalBasePtr::Serialize(ser);
     // 0x140095bef-0x140095c0e: retail's own null test, then IsDerivedFrom and a
     // null store; no test of the type id (row 1247).
-    if (m_scenarioInstance.Get() != nullptr &&
-        !::Object::IsDerivedFromNullSafe(m_scenarioInstance.Get(), Achievement::AchievementInstance::TypeId()))
+    if (!m_scenarioInstance.IsNull() &&
+        !::Object::IsDerivedFromNullSafe(m_scenarioInstance, Achievement::AchievementInstance::TypeId()))
         m_scenarioInstance = nullptr;
 
     // 0x140095c19-0x140095c26: AchievementManager::Persist, no test of the
@@ -1010,6 +1031,10 @@ extern "C" void GameUpdateLoop_SaveRoundtripCheck(GameUpdateLoop* self, Save::Sa
         fprintf(stderr, "[Roundtrip] RESULT=ERROR decompress loaded=%d resaved=%d\n", okA, okB);
         fflush(stderr);
         fresh._data = nullptr;   // not freed on this arm (the probe's behaviour before)
+        // Both raw images go back on this arm too (review 2026-11-03, F-084: clang-analyzer
+        // unix.Malloc); a failed Open left its pointer null, and free(nullptr) is a no-op.
+        std::free(a);
+        std::free(b);
         return;
     }
     RoundtripDump("standalone_roundtrip_loaded.bin",  a, an);
