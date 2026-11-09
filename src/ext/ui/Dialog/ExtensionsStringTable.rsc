@@ -129,6 +129,10 @@ StringTable resource
 		{ String _name = "ItemPriorityNeverTip";	String _text = "Citizens never take this item, even when it is the only one the storages hold. Click again to allow it."; }
 		// the filter button names what a click does, under the key of the mode being shown
 		{ String _name = "ItemPriorityShowAll";	String _text = "Show all items"; }
+		// ext.item_limits's row on a workshop's panel (ItemLimitsPanel.rsc)
+		{ String _name = "ItemLimitsLabel";			String _text = "@0 limit"; }
+		{ String _name = "ItemLimitsCheckTip";		String _text = "Check to give this item its own limit. Every workshop making it stops when the town holds this many, even under the category limit."; }
+		{ String _name = "ItemLimitsSpinnerTip";	String _text = "The town-wide limit for this item, shared by every workshop that makes it."; }
 		{ String _name = "ItemPriorityShowAllTip";	String _text = "Unchecked: only items your town has made or stored, and the ranked ones."; }
 
 		// ext.family_tree's page in it (FamilyTreePage.rsc); the rows' texts are set by the controller through FamilyParam
@@ -180,6 +184,7 @@ StringTable resource
 		// the Extensions dialog's two tabs (Extensions.rsc:tabCaptionOptional / tabCaptionDefault)
 		{ String _name = "ExtensionsTabOptional";	String _text = "Optional"; }
 		{ String _name = "ExtensionsTabDefault";		String _text = "Default"; }
+		{ String _name = "ExtensionsTabExperimental";	String _text = "Experimental"; }
 
 		// ext.building_finder's page in it (BuildingFinderPage.rsc); the rows' texts are set by the controller through FinderParam
 		{ String _name = "FinderTab";				String _text = "Find Buildings"; }
