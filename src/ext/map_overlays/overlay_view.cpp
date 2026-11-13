@@ -12,6 +12,7 @@
 #include "ext/map_overlays/map_overlays.h"
 #include "ext/registry.h"   // Ext::Ext() (OnGameStart reads the lock)
 #include "ext/map_overlays/overlay_math.h"
+#include "ext/map_overlays/overlay_render.h"   // OnGameStartRender
 #include "ext/map_overlays/overlay_views_internal.h"
 
 #include <cstring>
@@ -62,7 +63,8 @@ bool BuildGrid(const Selection& s, int& size, std::vector<float>& grid) {
         }
         const int months = ClampMonths(s.months);
         if (s.view == View::Traffic) {
-            h.SumTraffic(months, grid);
+            const uint8_t filter = s.kind < static_cast<uint8_t>(TrafficFilter::Count) ? s.kind : 0;
+            h.SumTraffic(static_cast<TrafficFilter>(filter), months, grid);
             return true;
         }
         BuildResourceMask(s, h.Resources(), s_mask);
@@ -93,11 +95,17 @@ void Rebuild() {
         s_legend = 0.0f;
         return;
     }
-    Blur(s_grid, size, BlurRadiusTiles(s_selection.scale));
-    const float maxValue = s_selection.view == View::Citizens ? kCitizensFullScale : RangeMax(s_grid);
-    s_legend = maxValue;
     std::vector<uint32_t> pixels;
-    Colourise(s_grid, maxValue, pixels);
+    if (s_selection.view == View::Land) {
+        // Classes, not amounts: exact per tile, one flat colour each, no range.
+        s_legend = 0.0f;
+        ColouriseLand(s_grid, pixels);
+    } else {
+        Blur(s_grid, size, BlurRadiusTiles(s_selection.scale));
+        const float maxValue = s_selection.view == View::Citizens ? kCitizensFullScale : RangeMax(s_grid);
+        s_legend = maxValue;
+        Colourise(s_grid, maxValue, pixels);
+    }
     const bool same = size == s_size && pixels.size() == s_pixels.size() &&
                       std::memcmp(pixels.data(), s_pixels.data(), pixels.size() * sizeof(uint32_t)) == 0;
     if (!same) {
@@ -157,6 +165,7 @@ void OnGameStart() {
     s_legend = 0.0f;
     ++s_version;   // the renderers drop what they uploaded for the last town
     ForgetMaterials();
+    OnGameStartRender();   // the renderers' objects over the last game's Externals
 }
 
 }  // namespace MapOverlays

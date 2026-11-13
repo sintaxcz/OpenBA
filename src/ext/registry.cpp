@@ -326,6 +326,15 @@ const Entry kEntries[] = {
       "Steady shadows while zooming",
       "Shadows no longer flicker and pulse while the camera zooms in or out.",
       0, [](State& s) -> bool& { return s.fix.shadow_zoom_pulse; } },
+    // PRIORITYAFTERLOAD (docs/retail_bugs.md section 34): retail rebuilds the scheduler's queue-order tree
+    // on load only for a version-2 save, so after a load Increase Priority counts down from 0 again and
+    // ranks behind every priority given before the save. With the row on the tree is rebuilt from the
+    // jobs' saved keys. Sim-visible (which job an idle worker takes); nothing saved.
+    { "priority_after_load", Tier::Fix, Class::None, true,
+      "Priority tool after loading",
+      "After loading a save, the Increase Priority tool again puts work ahead of everything else, "
+      "including work that was prioritized before the save.",
+      0, [](State& s) -> bool& { return s.fix.priority_after_load; } },
 
     // Extensions. Each one adds a field to Ext::Extensions and a row here:
     // Tier::Extension, its Class, default true for class A / false for B or C, and for class B or C its
@@ -563,11 +572,28 @@ const Entry kEntries[] = {
       "of a workshop that makes it. Every workshop making that item stops at the limit. Play diverges; "
       "the limits are recorded in the save.",
       1, [](State& s) -> bool& { return s.ext.item_limits; } },
+    // TRADERREQUEST (docs/extensions/handins/TRADERREQUEST.md): a trading post can ask for one trader, for the
+    // next visit or every visit, from its Orders tab; a requested trader's goods cost double. Class C: the
+    // requests are the town's own state, recorded in the save's tail (src/ext/trader_request/save_state.cpp).
+    { "trader_request", Tier::Extension, Class::C, true,
+      "Request a trader",
+      "Lets a trading post ask for one trader, for the next visit or every visit, from its Orders tab. "
+      "A requested trader's goods cost double. Play diverges; the requests are recorded in the save.",
+      1, [](State& s) -> bool& { return s.ext.trader_request; } },
 
     // TERRAINEDIT (docs/extensions/handins/TERRAINEDIT.md): a brush tool, started from the Terrain page of
     // the extension window, that edits the terrain under the mouse. Class B: play diverges (the map is no
     // longer the generated one) and no state of its own is recorded, because the save already carries the
     // heights and the cell types the brush writes.
+    // RIVERCHANNEL (docs/extensions/handins/RIVERCHANNEL.md): at the end of a new map's height pipeline, every
+    // stretch of river thinner than two tiles gets a channel that wide. Class B: nothing new is
+    // saved (the heights are), but the map differs from retail's for the same seed.
+    { "river_channel", Tier::Extension, Class::B, false,
+      "Wider thin rivers",
+      "On a new map, a river thinner than two tiles gets a channel that wide, so it no longer shows "
+      "as a staircase of single tiles. Wide rivers and lakes do not change. The map differs from the "
+      "original game's for the same seed; recorded in the save.",
+      1, [](State& s) -> bool& { return s.ext.river_channel; } },
     { "terrain_edit", Tier::Extension, Class::B, false,
       "Terrain editor",
       "A brush, started from the Terrain page in a game, that reshapes the ground under the mouse. "
@@ -598,7 +624,7 @@ const Entry kEntries[] = {
       "Map data views",
       "Adds views to the map window that show where goods are produced, consumed and stored, where services "
       "reach and where citizens walk. The last year's history is kept in the save.",
-      1, [](State& s) -> bool& { return s.ext.map_overlays; } },
+      2, [](State& s) -> bool& { return s.ext.map_overlays; } },
     // HITCH_PFBURST (docs/extensions/handins/HITCH_PFBURST.md): a per-frame budget of the cold
     // citizens' warm-house scans (one region path search per residence), so a cold spell at high
     // speed spreads its scans over a few frames instead of one 10-20 ms frame.
@@ -785,6 +811,15 @@ const Entry kEntries[] = {
       "Adds a Find Buildings page to the extension window: search every building by name, and keep a list of "
       "favorites you can start placing with one click.",
       0, [](State& s) -> bool& { return s.ext.building_finder; } },
+    // STORAGEMETRICS (docs/extensions/handins/STORAGEMETRICS.md): a Storage tab in the Town Hall window with
+    // the used and total space of the town's stockpiles, storage barns and trading posts, in figures and in
+    // percent, by building type too where a kind has several (a mod's stores). Class A: it only reads the
+    // town, nothing saved, live. OFF by default: it adds a tab to the Town Hall window, the player's call.
+    { "storage_metrics", Tier::Extension, Class::A, false,
+      "Storage space",
+      "Adds a Storage tab to the Town Hall window: how much room the stockpiles, storage barns and trading "
+      "posts have and how much of it is used, as figures and in percent.",
+      0, [](State& s) -> bool& { return s.ext.storage_metrics; } },
     // DYNAMICPROFESSIONS (docs/extensions/handins/DYNAMICPROFESSIONS.md): the toolbar's Professions button
     // opens a window that lists only the professions the town can use (the laborer and the builder always,
     // then every profession with a workplace built or a citizen in it), in place of retail's list of all of
@@ -796,6 +831,26 @@ const Entry kEntries[] = {
       "Replaces the Professions window with one that lists only the professions your town can use: the "
       "laborer and builder, and any profession with a workplace built or a citizen working at it.",
       0, [](State& s) -> bool& { return s.ext.dynamic_professions; } },
+    // ROADUPGRADE (docs/extensions/handins/ROADUPGRADE.md): a drag tool with its own button in the toolbar's
+    // roads group: every dirt road in the dragged rectangle is ordered rebuilt as stone, through the order
+    // the stone road tool places. Class A: the orders are the game's own (a player can place the same ones
+    // by tracing the roads with the stone road tool), nothing is kept, live.
+    // ON by default (class A; the user's ruling of 2026-11-11).
+    { "road_upgrade", Tier::Extension, Class::A, true,
+      "Upgrade roads",
+      "Adds an Upgrade Roads tool to the toolbar's roads menu: drag a rectangle and every dirt road in it "
+      "is rebuilt as a stone road, without tracing each road again.",
+      0, [](State& s) -> bool& { return s.ext.road_upgrade; } },
+    // RADIUSALL (docs/extensions/handins/RADIUSALL.md): a Shift+click (a long press with ext.touch_pointer) on
+    // a building that has a work circle shows the circle of every building of its kind, and again hides
+    // them. Class A: the circles are the game's own decals, taken out before a save is written; the kinds
+    // shown are forgotten with the game; live.
+    { "radius_all", Tier::Extension, Class::A, true,
+      "Work circles of a kind",
+      "Shift+click a building that has a work circle (a gatherer, a forester, a market...) to show the circle "
+      "of every building of its kind while you select or place others; Shift+click one again to hide them. "
+      "On a touch screen: a long press.",
+      0, [](State& s) -> bool& { return s.ext.radius_all; } },
     // TOOLNAMES (docs/extensions/handins/TOOLNAMES.md): the citizen panel names the tool the citizen carries
     // (the item's own name) instead of retail's "default tool / other tool" words. Class C: which tool each
     // citizen carries is the town's own state, recorded in the save's tail so a tool keeps its name across a

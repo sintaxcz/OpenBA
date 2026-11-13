@@ -39,7 +39,7 @@ bool ParseEmbedded(const char* path, File& f) {
 }  // namespace
 
 UNIT_TEST(ext_rsc_text_embedded_files) {
-    CHECK(kEmbeddedCount == 22);
+    CHECK(kEmbeddedCount == 24);
     CHECK(Embedded("Dialog/Extensions.rsc") != nullptr);
     CHECK(Embedded("Dialog/EnhancedOptions.rsc") != nullptr);
     CHECK(Embedded("Dialog/ExtensionsStringTable.rsc") != nullptr);
@@ -47,6 +47,7 @@ UNIT_TEST(ext_rsc_text_embedded_files) {
     CHECK(Embedded("Dialog/RestrictedFoodsPage.rsc") != nullptr);
     CHECK(Embedded("Dialog/ItemPriorityPage.rsc") != nullptr);
     CHECK(Embedded("Dialog/ItemLimitsPanel.rsc") != nullptr);
+    CHECK(Embedded("Dialog/TraderRequestPanel.rsc") != nullptr);
     CHECK(Embedded("Dialog/FamilyTreePage.rsc") != nullptr);
     CHECK(Embedded("Dialog/FamilyTreeWindow.rsc") != nullptr);
     CHECK(Embedded("Dialog/FamilyTreeSummary.rsc") != nullptr);
@@ -57,6 +58,7 @@ UNIT_TEST(ext_rsc_text_embedded_files) {
     CHECK(Embedded("Dialog/TownScreenshotPage.rsc") != nullptr);
     CHECK(Embedded("Dialog/ShowGridPage.rsc") != nullptr);
     CHECK(Embedded("Dialog/FpsCounterPage.rsc") != nullptr);
+    CHECK(Embedded("Dialog/StorageMetricsTab.rsc") != nullptr);
     CHECK(Embedded("Dialog/BuildingFinderPage.rsc") != nullptr);
     CHECK(Embedded("Dialog/FavoritesWindow.rsc") != nullptr);
     CHECK(Embedded("Dialog/FullscreenMode.rsc") != nullptr);
@@ -220,8 +222,12 @@ UNIT_TEST(ext_rsc_text_parse_enhanced_and_strings) {
     // + 1 for the touch pointer bar's Shift tip, + 1 for fix.mods_persist's in-game warning, + 9 for the FPS
     // page, + 18 for the Find Buildings page and its favorites window, + 52 for the map window's overlay
     // views, + 4 for the dynamic Professions window (its title, its two column-button tips and its resize
-    // strip), + 1 for the Experimental tab's caption, + 3 for ext.item_limits' panel row (label, two tips)
-    CHECK(strings && strings->blocks.size() == 142 + 18 + 52 + 4 + 1 + 3);
+    // strip), + 1 for the Experimental tab's caption, + 3 for ext.item_limits' panel row (label, two tips),
+    // + 5 for the map window's Land view (caption, tip, the three key texts), + 10 for
+    // ext.storage_metrics' Town Hall tab, + 2 for ext.road_upgrade's button (its tooltip's title and text),
+    // + 5 for ext.trader_request's Orders tab row (label, tip, any trader, the two modes), + 6 for the map
+    // window's Traffic filter buttons (three captions, three tips)
+    CHECK(strings && strings->blocks.size() == 142 + 18 + 52 + 4 + 1 + 3 + 5 + 10 + 2 + 5 + 6);
     if (strings) {
         // The Extensions dialog's three tab captions.
         int tabKeys = 0;
@@ -320,6 +326,29 @@ UNIT_TEST(ext_rsc_text_parse_item_limits_panel) {
         CHECK(vertical && !vertical->tokens.empty() && vertical->tokens[0].text == "true");
     }
     CheckKnownTypes(f, "ItemLimitsPanel.rsc");
+}
+
+UNIT_TEST(ext_rsc_text_parse_trader_request_panel) {
+    File f;
+    CHECK(ParseEmbedded("Dialog/TraderRequestPanel.rsc", f));
+    // The row panel_row.cpp clones onto the trading post window's Orders tab: the text, by the name the rsc
+    // lists; the two combos are copies of the window's own order combo.
+    const Object* row = f.Find("ribbonTraderRequestRow");
+    CHECK(row && row->type == "RibbonDescription");
+    if (row) {
+        const Field* els = row->body.Find("_elements");
+        CHECK(els && els->tokens.size() == 1 && els->tokens[0].text == "textTraderRequestRow");
+    }
+    const Object* text = f.Find("textTraderRequestRow");
+    CHECK(text && text->type == "TextDescription");
+    // The column that takes the order combo's row's slot: vertical, so the row gets its own line under it.
+    const Object* column = f.Find("ribbonTraderRequestColumn");
+    CHECK(column && column->type == "RibbonDescription");
+    if (column) {
+        const Field* vertical = column->body.Find("_vertical");
+        CHECK(vertical && !vertical->tokens.empty() && vertical->tokens[0].text == "true");
+    }
+    CheckKnownTypes(f, "TraderRequestPanel.rsc");
 }
 
 UNIT_TEST(ext_rsc_text_parse_item_priority_page) {
@@ -447,6 +476,28 @@ UNIT_TEST(ext_rsc_text_parse_fps_counter_page) {
     CheckKnownTypes(f, "FpsCounterPage.rsc");
 }
 
+UNIT_TEST(ext_rsc_text_parse_storage_metrics_tab) {
+    File f;
+    CHECK(ParseEmbedded("Dialog/StorageMetricsTab.rsc", f));
+    CHECK(f.Find("resource") == nullptr);   // a tab's button and page, not a dialog
+    const Object* button = f.Find("buttonStorageMetricsTab");
+    CHECK(button && button->type == "ButtonDescription");
+    const Object* page = f.Find("pageStorageMetrics");
+    CHECK(page && page->type == "RibbonDescription");
+    const Object* table = f.Find("tableStorageMetrics");
+    CHECK(table && table->type == "TableDescription");
+    // the names townhall_tab.cpp looks up in a cloned row
+    const char* const cells[] = { "textStorageMetricsTotalName", "textStorageMetricsTypeName",
+                                  "textStorageMetricsBuildings", "textStorageMetricsSpace",
+                                  "textStorageMetricsFull" };
+    for (const char* name : cells) {
+        const Object* cell = f.Find(name);
+        CHECK(cell && cell->type == "TextDescription");
+    }
+    CHECK(f.Find("ribbonStorageMetricsTotalRow") && f.Find("ribbonStorageMetricsTypeRow"));
+    CheckKnownTypes(f, "StorageMetricsTab.rsc");
+}
+
 UNIT_TEST(ext_rsc_text_parse_building_finder_page) {
     File f;
     CHECK(ParseEmbedded("Dialog/BuildingFinderPage.rsc", f));
@@ -500,11 +551,15 @@ UNIT_TEST(ext_rsc_text_parse_map_overlays) {
     const Object* pages = f.Find("groupMapOverlaysPages");
     CHECK(pages && pages->type == "GroupDescription");
     CHECK(f.Find("pageMapOverlaysMap") && f.Find("pageMapOverlaysResource") && f.Find("pageMapOverlaysKind") &&
-          f.Find("pageMapOverlaysTraffic"));
+          f.Find("pageMapOverlaysTraffic") && f.Find("pageMapOverlaysLand"));
+    CHECK(f.Find("columnMapOverlaysLandKey") && f.Find("rowMapOverlaysLandKey") &&
+          f.Find("imageMapOverlaysLandSwatch") && f.Find("textMapOverlaysLandKey"));
     CHECK(f.Find("comboMapOverlaysCategory") && f.Find("comboMapOverlaysResource") &&
           f.Find("comboMapOverlaysKind") && f.Find("rowMapOverlaysMonths") && f.Find("sliderMapOverlaysMonths") &&
           f.Find("sliderMapOverlaysScale") && f.Find("ribbonMapOverlaysRamp") &&
           f.Find("textMapOverlaysLegendMax") && f.Find("checkMapOverlaysTerrain"));
+    const Object* trip = f.Find("buttonMapOverlaysTrip");
+    CHECK(f.Find("rowMapOverlaysTrips") && trip && trip->type == "ButtonDescription");
     CheckKnownTypes(f, "MapOverlays.rsc");
 }
 

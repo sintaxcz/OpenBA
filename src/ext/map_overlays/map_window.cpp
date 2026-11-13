@@ -14,9 +14,11 @@
 //
 // THE LAYOUT: one row, as tall as the map. Retail's map content element (MapUI's container, built from
 // Map.rsc:content by the UIDescription) is moved into the row's first cell: only its parent changes, so MapUI's
-// pointers to its images stay valid and the file is untouched. Beside it, a column of eight view buttons, then
+// pointers to its images stay valid and the file is untouched. Beside it, a column of nine view buttons, then
 // the shown view's controls (MapOverlays.rsc). The shown view's button is untinted and the others dimmed; only
-// its page is shown (the others are hidden and take no room). The map shows in every view: an overlay is drawn
+// its page is shown (the others are hidden and take no room). The map is a square as tall as the button
+// column when that is taller than retail's 192 units (FitMap: ext.phone_menu's finger-sized buttons make it
+// so), so it fills its cell at any button size. The map shows in every view: an overlay is drawn
 // over MapUI's own image (MapWindowUpdate). The first view, Map, has an empty page and selects View::Map: the
 // map and the button column, no controls (MapWindowUpdate puts retail's sprite back).
 //
@@ -24,9 +26,10 @@
 // middle to its coarsest (Selection.scale 0.5 + (v - 1) * 0.125; default 3); Traffic and the rest 0..10
 // (Selection.scale v / 10; default 5), fine enough to tell the roads apart.
 //
-// THE CONTROLS are read once a frame; only the view buttons are heard as element events (msg 0x12 with our
-// ids, away from ToolUI's 0 / 1 and MapUI's 1000; every control has an id of ours). Every change becomes one
-// SetSelection. Per view the window remembers what was picked (category, item, kind, months, scale); the
+// THE CONTROLS are read once a frame; only the view buttons and the Traffic view's three filter buttons
+// (All, To work, To home: TrafficFilter, the picked one bright) are heard as element events (msg 0x12 with
+// our ids, away from ToolUI's 0 / 1 and MapUI's 1000; every control has an id of ours). Every change becomes
+// one SetSelection. Per view the window remembers what was picked (category, item, kind, months, scale); the
 // terrain check box is one setting for every view.
 //
 // THE RESOURCE PICKER. Categories are RawMaterialDescription::_flags masks: All, Food (the edible bit) and
@@ -46,6 +49,7 @@
 #include "ui/CheckElement.h"
 #include "ui/ComboElement.h"
 #include "ui/SliderElement.h"
+#include "ui/RibbonElement.h"
 #include "ui/ElementDescription.h"
 #include "ui/Element.h"
 #include "ui/DialogController.h"
@@ -64,6 +68,7 @@
 #include "Component/RawMaterialDescription.h"
 #include "Component/TradeDescription.h"
 #include "Dialog/MapUI.h"
+#include "Component/FrustumOutlineElement.h"
 
 #include "ext/map_overlays/map_overlays.h"
 #include "ext/map_overlays/map_window.h"
@@ -91,6 +96,7 @@ constexpr const char* kColumnRsc = "Dialog/MapOverlays.rsc:ribbonMapOverlays";
 constexpr const char* kInsertAt  = "userGroup0";   // StandardDialog.rsc: the group the map content is in
 
 constexpr int32_t kIdBase = 7300;      // our elements' ids: kIdBase + 16 * tab + n (ToolUI uses 0 / 1, MapUI 1000)
+constexpr int32_t kIdTrip = 7;         // n of the Traffic view's first filter button (0..6 are taken)
 constexpr int kScaleSteps = 10;        // the fine scale slider: 0 (Fine, Selection.scale 0) .. 10 (Coarse, 1)
 constexpr int kFlowScaleSteps = 5;     // Made / Used / Stock: 1 (Selection.scale 0.5) .. 5 (1)
 constexpr int kViewCount = static_cast<int>(View::Count);
@@ -115,6 +121,25 @@ constexpr TabSpec kTabs[kViewCount] = {
     { View::Traffic,     "MapOverlaysTabTraffic",     "MapOverlaysTabTrafficTip" },
     { View::Citizens,    "MapOverlaysTabCitizens",    "MapOverlaysTabCitizensTip" },
     { View::Natural,     "MapOverlaysTabNatural",     "MapOverlaysTabNaturalTip" },
+    { View::Land,        "MapOverlaysTabLand",        "MapOverlaysTabLandTip" },
+};
+
+// The Land view's key: one row per class that has a colour, in LandClass order from Open.
+constexpr const char* kLandKeys[] = {
+    "MapOverlaysLandOpen", "MapOverlaysLandClearing", "MapOverlaysLandUnbuildable",
+};
+static_assert(sizeof(kLandKeys) / sizeof(kLandKeys[0]) == static_cast<size_t>(LandClass::Count) - 1, "");
+
+// The Traffic view's filter buttons, in TrafficFilter order: caption and tooltip keys.
+constexpr int kTripCount = static_cast<int>(TrafficFilter::Count);
+struct TripSpec {
+    const char* caption;
+    const char* tip;
+};
+constexpr TripSpec kTrips[kTripCount] = {
+    { "MapOverlaysTripAll",  "MapOverlaysTripAllTip" },
+    { "MapOverlaysTripWork", "MapOverlaysTripWorkTip" },
+    { "MapOverlaysTripHome", "MapOverlaysTripHomeTip" },
 };
 
 // The kind combos' items, in the enums' order (overlay_core.h).
@@ -402,13 +427,16 @@ std::vector<Category> CollectCategories(const std::vector<Material>& materials) 
 
 // ---- the legend --------------------------------------------------------------------------------------------
 
-// Ramp() is 0xAABBGGRR (the overlay's pixel order); an element colour is 0xAARRGGBB, here opaque.
-uint32_t SwatchColour(float t) {
-    const uint32_t c = Ramp(t);
-    const uint32_t r = c & 0xffu;
-    const uint32_t g = (c >> 8) & 0xffu;
-    const uint32_t b = (c >> 16) & 0xffu;
+// An overlay pixel is 0xAABBGGRR; an element colour is 0xAARRGGBB, here opaque.
+uint32_t ElementColour(uint32_t pixel) {
+    const uint32_t r = pixel & 0xffu;
+    const uint32_t g = (pixel >> 8) & 0xffu;
+    const uint32_t b = (pixel >> 16) & 0xffu;
     return 0xff000000u | (r << 16) | (g << 8) | b;
+}
+
+uint32_t SwatchColour(float t) {
+    return ElementColour(Ramp(t));
 }
 
 const char* UnitKey(View view, uint8_t kind) {
@@ -448,6 +476,36 @@ int RoundSlider(const UI::SliderElement* slider, int lo, int hi) {
 
 // ---- the controller ----------------------------------------------------------------------------------------
 
+// A Mod.rsc:buttonMod button's children: its border (the raised frame) and its caption text.
+struct ButtonParts {
+    UI::Element* frame = nullptr;
+    UI::Element* caption = nullptr;
+};
+
+ButtonParts PartsOf(UI::Element* button) {
+    ButtonParts parts;
+    const int n = button->ChildCount();
+    for (int k = 0; k < n; ++k) {
+        UI::Element* child = button->Child(k).Get();
+        if (::Object::IsDerivedFromNullSafe(child, UI::TextElement::TypeId())) {
+            parts.caption = child;
+        } else if (child != nullptr && parts.frame == nullptr) {
+            parts.frame = child;
+        }
+    }
+    return parts;
+}
+
+// The picked button of a set is untinted, the others dimmed.
+void TintButton(const ButtonParts& parts, bool picked) {
+    if (parts.frame != nullptr) {
+        parts.frame->SetColor(picked ? kCaptionShown : kCaptionOther);
+    }
+    if (parts.caption != nullptr) {
+        parts.caption->SetColor(picked ? kCaptionShown : kCaptionOther);
+    }
+}
+
 // One tab's page and the controls in it (null when the page has none of that kind).
 struct Page {
     const TabSpec* spec = nullptr;
@@ -463,6 +521,7 @@ struct Page {
     UI::SliderElement* scale = nullptr;
     UI::TextElement* legendMax = nullptr;
     UI::CheckElement* terrain = nullptr;
+    std::array<ButtonParts, kTripCount> trips;   // the Traffic view's filter buttons (empty elsewhere)
     std::vector<int> resourceItems;   // resource combo item -> index into the materials (item 0: -1, all)
     int32_t categoryItem = -1;        // the items last read
     int32_t resourceItem = -1;
@@ -492,10 +551,14 @@ private:
     void BuildPage(Page& page, int tab);
     void FillResources(Page& page, uint32_t categoryFlags, const std::string& selectPath);
     void ShowTab(int tab);
+    void PickTrip(Page& page, int trip);
     void ReadPage(Page& page, Selection& s);
     void UpdateLegend(Page& page, const Selection& s);
+    void FitMap();
 
     MapUI* _map = nullptr;            // the window's MapUI (deleted after this controller)
+    UI::Element* _buttons = nullptr;  // columnMapOverlaysViews
+    int32_t _retailSide = 0;          // the map image's side as Map.rsc gives it (0: not read, FitMap does nothing)
     std::vector<Page> _pages;         // their elements are owned by the dialog's element tree
     std::vector<Material> _materials;
     std::vector<Category> _categories;
@@ -515,6 +578,10 @@ bool MapWindowController::Build(UI::Element* column) {
                      kViewCount, kViewCount);
         return false;
     }
+    _buttons = buttons;
+    if (UI::ImageElement* image = FindElement<UI::ImageElement>(_map->_container, "imageMap")) {
+        _retailSide = image->_height;
+    }
     _materials = CollectMaterials();
     _categories = CollectCategories(_materials);
 
@@ -529,17 +596,10 @@ bool MapWindowController::Build(UI::Element* column) {
         }
         page.button->SetElementId(kIdBase + 16 * tab);
         page.button->SetToolTip(Toolbar::OurString(spec.tip));
-        // The button's children: its border (the raised frame) and its caption text.
-        const int nb = page.button->ChildCount();
-        for (int k = 0; k < nb; ++k) {
-            UI::Element* child = page.button->Child(k).Get();
-            if (::Object::IsDerivedFromNullSafe(child, UI::TextElement::TypeId())) {
-                page.caption = child;
-                Toolbar::SetTableText(child, spec.caption);
-            } else if (child != nullptr && page.frame == nullptr) {
-                page.frame = child;
-            }
-        }
+        const ButtonParts parts = PartsOf(page.button);
+        page.frame = parts.frame;
+        page.caption = parts.caption;
+        Toolbar::SetTableText(page.caption, spec.caption);
         _pages.push_back(page);
         BuildPage(_pages.back(), tab);
     }
@@ -624,6 +684,21 @@ void MapWindowController::BuildPage(Page& page, int tab) {
     if (page.terrain != nullptr) {
         page.terrain->SetElementId(ids + 6);
     }
+    // The Traffic view's filter buttons, in TrafficFilter order.
+    if (UI::Element* row = root->FindElement(System::String("rowMapOverlaysTrips")).Get()) {
+        const int n = std::min(row->ChildCount(), kTripCount);
+        for (int i = 0; i < n; ++i) {
+            UI::Element* button = row->Child(i).Get();
+            if (button == nullptr) {
+                continue;
+            }
+            button->SetElementId(ids + kIdTrip + i);
+            button->SetToolTip(Toolbar::OurString(kTrips[i].tip));
+            page.trips[static_cast<size_t>(i)] = PartsOf(button);
+            Toolbar::SetTableText(page.trips[static_cast<size_t>(i)].caption, kTrips[i].caption);
+        }
+        PickTrip(page, memory.kind < kTripCount ? memory.kind : 0);
+    }
     // The ramp's swatches, 0 excluded (transparent): the colour at the top of each tenth.
     if (UI::Element* ramp = root->FindElement(System::String("ribbonMapOverlaysRamp")).Get()) {
         const int n = ramp->ChildCount();
@@ -631,6 +706,24 @@ void MapWindowController::BuildPage(Page& page, int tab) {
             UI::Element* swatch = ramp->Child(i).Get();
             if (swatch != nullptr) {
                 swatch->SetColor(SwatchColour(static_cast<float>(i + 1) / static_cast<float>(n)));
+            }
+        }
+    }
+    // The Land view's key: each row is a swatch and a text, in LandClass order from Open.
+    if (UI::Element* key = root->FindElement(System::String("columnMapOverlaysLandKey")).Get()) {
+        const int n = std::min(key->ChildCount(), static_cast<int>(sizeof(kLandKeys) / sizeof(kLandKeys[0])));
+        for (int i = 0; i < n; ++i) {
+            UI::Element* row = key->Child(i).Get();
+            if (row == nullptr || row->ChildCount() < 2) {
+                continue;
+            }
+            UI::Element* swatch = row->Child(0).Get();
+            UI::Element* text = row->Child(1).Get();
+            if (swatch != nullptr) {
+                swatch->SetColor(ElementColour(LandColour(static_cast<LandClass>(i + 1))));
+            }
+            if (text != nullptr) {
+                Toolbar::SetTableText(text, kLandKeys[i]);
             }
         }
     }
@@ -663,6 +756,15 @@ void MapWindowController::FillResources(Page& page, uint32_t categoryFlags, cons
     page.resourceItem = page.resource->GetCurrentItem();
 }
 
+// A Traffic filter button was pressed (or the page was built): the view's memory takes it (ReadPage puts it
+// in the selection) and the picked button is the bright one.
+void MapWindowController::PickTrip(Page& page, int trip) {
+    g_memory[static_cast<size_t>(page.spec->view)].kind = static_cast<uint8_t>(trip);
+    for (int i = 0; i < kTripCount; ++i) {
+        TintButton(page.trips[static_cast<size_t>(i)], i == trip);
+    }
+}
+
 // A tab came to the front: its view is selected, and the shared controls show the shared settings.
 void MapWindowController::ShowTab(int tab) {
     _shownTab = tab;
@@ -677,12 +779,10 @@ void MapWindowController::ShowTab(int tab) {
         } else {
             p.root->SetFlagsOnOff(UI::kElementFlagHidden, 0);
         }
-        if (p.frame != nullptr) {
-            p.frame->SetColor(shown ? kCaptionShown : kCaptionOther);
-        }
-        if (p.caption != nullptr) {
-            p.caption->SetColor(shown ? kCaptionShown : kCaptionOther);
-        }
+        ButtonParts parts;
+        parts.frame = p.frame;
+        parts.caption = p.caption;
+        TintButton(parts, shown);
     }
     if (tab < 0 || tab >= static_cast<int>(_pages.size())) {
         return;
@@ -755,7 +855,50 @@ void MapWindowController::UpdateLegend(Page& page, const Selection& s) {
     page.legendMax->SetParameter(0, System::String(FormatValue(value).c_str()));
 }
 
-// A view button was pressed (its click, msg 0x12, with the id Build gave it).
+// The map as tall as the button column. Retail's map is a fixed square (Map.rsc: imageMap, imageOverlay and
+// the frustum outline, 192 units each); the row is as tall as its tallest cell, so a taller button column
+// (nine finger-sized buttons under ext.phone_menu) left the map short of its cell. The three elements take
+// the column's height less the content's own padding, never less than retail's side: MapUI's click
+// (0x14006c9e0) and the outline's draw read the elements' own sizes, so both follow. The column's height is
+// summed from its buttons, which do not depend on the map: no feedback, and it shrinks back when the buttons do.
+void MapWindowController::FitMap() {
+    UI::Element* content = _map->_container;
+    if (_buttons == nullptr || content == nullptr || _retailSide <= 0 || _buttons->NeedsSizeCalc()) {
+        return;
+    }
+    int32_t column = _buttons->_topPad + _buttons->_bottomPad;
+    const int n = _buttons->ChildCount();
+    for (int i = 0; i < n; ++i) {
+        const UI::Element* button = _buttons->Child(i).Get();
+        if (button != nullptr) {
+            column += button->_layoutHeight;
+        }
+    }
+    if (n > 1 && ::Object::IsDerivedFromNullSafe(_buttons, UI::RibbonElement::TypeId())) {
+        column += (n - 1) * static_cast<const UI::RibbonElement*>(_buttons)->_spacing;
+    }
+    const int32_t side = std::max(_retailSide, column - content->_topPad - content->_bottomPad);
+    UI::ImageElement* map = FindElement<UI::ImageElement>(content, "imageMap");
+    UI::ImageElement* overlay = FindElement<UI::ImageElement>(content, "imageOverlay");
+    UI::Element* outline = content->FindElement(System::String("frustum")).Get();
+    if (map == nullptr || map->_height == side) {
+        return;
+    }
+    map->SetWidthHeight(side, side);
+    if (overlay != nullptr) {
+        overlay->SetWidthHeight(side, side);
+    }
+    if (::Object::IsDerivedFromNullSafe(outline, FrustumOutlineElement::TypeId())) {
+        FrustumOutlineElement* frustum = static_cast<FrustumOutlineElement*>(outline);
+        frustum->_width = side;
+        frustum->_height = side;
+        for (UI::Element* walk = frustum; walk != nullptr; walk = walk->_parent) {
+            walk->_flags |= UI::kElementFlagNeedsSizeCalc;
+        }
+    }
+}
+
+// A view button or a Traffic filter button was pressed (its click, msg 0x12, with the id Build gave it).
 void MapWindowController::OnElementEvent(Object::InternalPtr<UI::Element>* /*element*/, UI::EventId msg, int32_t id,
                                          int32_t /*c*/, int32_t /*d*/, int32_t /*e*/, void* /*userData*/) {
     if (msg != UI::EventId::Activated) {
@@ -766,6 +909,10 @@ void MapWindowController::OnElementEvent(Object::InternalPtr<UI::Element>* /*ele
             _wantedTab = tab;
             return;
         }
+    }
+    const int32_t trafficIds = kIdBase + 16 * static_cast<int32_t>(View::Traffic) + kIdTrip;
+    if (id >= trafficIds && id < trafficIds + kTripCount && static_cast<size_t>(View::Traffic) < _pages.size()) {
+        PickTrip(_pages[static_cast<size_t>(View::Traffic)], id - trafficIds);
     }
 }
 
@@ -782,6 +929,7 @@ void MapWindowController::OnUpdate(const System::Time& /*time*/) {
     if (tab != _shownTab) {
         ShowTab(tab);
     }
+    FitMap();
     if (tab >= 0 && tab < static_cast<int32_t>(_pages.size())) {
         Page& page = _pages[static_cast<size_t>(tab)];
         Selection s = CurrentSelection();

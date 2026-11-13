@@ -34,6 +34,7 @@
 #include "ext/better_water/river_rows.h"
 
 #include "Game/WorldGeometry.h"
+#include "diag/water_dump.h"   // BANISHED_WATER_DUMP
 #include "video/Buffers.h"
 
 #include "video/Context.h"
@@ -393,6 +394,8 @@ FadeSlot* FadeFor(const WorldGeometry& geo) {
         int skipped = 0;
         const int relaid = RiverRows::Relay(s->vertices, geo._contourIndices.data, indexCount, rivers.data(),
                                             static_cast<int32_t>(rivers.size()), &skipped);
+        // BANISHED_WATER_DUMP (src/diag/water_dump.h): the mesh before and after, for tools/water_view.
+        WaterDump::Write(geo, static_cast<int32_t>(s->vertices.size()) == waterCount ? s->vertices.data() : nullptr);
         if (faded == 0 && relaid == 0) s->vertices.clear();
         std::fprintf(stderr,
                      "[BetterWater] river mouths: %d lake vertices faded of %d; river rows: %d vertices relaid "

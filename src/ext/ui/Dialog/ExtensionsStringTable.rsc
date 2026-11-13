@@ -75,6 +75,17 @@ StringTable resource
 		{ String _name = "ShowGridHueLabel";			String _text = "Hue"; }
 		{ String _name = "ShowGridSaturationLabel";		String _text = "Color"; }
 		{ String _name = "ShowGridWidthLabel";			String _text = "Width"; }
+		// ext.storage_metrics' tab in the Town Hall window (Dialog/StorageMetricsTab.rsc)
+		{ String _name = "StorageMetricsTab";			String _text = "Storage"; }
+		{ String _name = "StorageMetricsTitle";			String _text = "Storage space"; }
+		{ String _name = "StorageMetricsHeaderName";		String _text = "Storage"; }
+		{ String _name = "StorageMetricsHeaderBuildings";	String _text = "Buildings"; }
+		{ String _name = "StorageMetricsHeaderSpace";		String _text = "Used / capacity"; }
+		{ String _name = "StorageMetricsHeaderFull";		String _text = "Full"; }
+		{ String _name = "StorageMetricsStockpiles";		String _text = "Stockpiles"; }
+		{ String _name = "StorageMetricsBarns";			String _text = "Storage barns"; }
+		{ String _name = "StorageMetricsTradingPosts";		String _text = "Trading posts"; }
+		{ String _name = "StorageMetricsParam";			String _text = "@0"; }
 		{ String _name = "FpsCounterTab";			String _text = "FPS"; }
 		{ String _name = "FpsCounterCurrentLabel";			String _text = "Current"; }
 		{ String _name = "FpsCounterAverageLabel";			String _text = "Average"; }
@@ -133,6 +144,12 @@ StringTable resource
 		{ String _name = "ItemLimitsLabel";			String _text = "@0 limit"; }
 		{ String _name = "ItemLimitsCheckTip";		String _text = "Check to give this item its own limit. Every workshop making it stops when the town holds this many, even under the category limit."; }
 		{ String _name = "ItemLimitsSpinnerTip";	String _text = "The town-wide limit for this item, shared by every workshop that makes it."; }
+		// ext.trader_request's row on the trading post window's Orders tab (TraderRequestPanel.rsc)
+		{ String _name = "TraderRequestLabel";		String _text = "Request trader (price mult)"; }
+		{ String _name = "TraderRequestTip";		String _text = "Ask for one trader instead of whoever turns up. A requested trader's goods cost double."; }
+		{ String _name = "TraderRequestAny";		String _text = "Any trader (1x)"; }
+		{ String _name = "TraderRequestOnce";		String _text = "Next visit"; }
+		{ String _name = "TraderRequestAlways";		String _text = "Every visit"; }
 		{ String _name = "ItemPriorityShowAllTip";	String _text = "Unchecked: only items your town has made or stored, and the ranked ones."; }
 
 		// ext.family_tree's page in it (FamilyTreePage.rsc); the rows' texts are set by the controller through FamilyParam
@@ -186,6 +203,10 @@ StringTable resource
 		{ String _name = "ExtensionsTabDefault";		String _text = "Default"; }
 		{ String _name = "ExtensionsTabExperimental";	String _text = "Experimental"; }
 
+		// ext.road_upgrade's button in the toolbar's roads group (src/ext/road_upgrade)
+		{ String _name = "RoadUpgradeTitle";			String _text = "Upgrade Roads"; }
+		{ String _name = "RoadUpgradeTip";			String _text = "Drag over an area to rebuild its dirt roads as stone roads."; }
+
 		// ext.building_finder's page in it (BuildingFinderPage.rsc); the rows' texts are set by the controller through FinderParam
 		{ String _name = "FinderTab";				String _text = "Find Buildings"; }
 		{ String _name = "FinderHint";			String _text = "Press a name to place it. + adds it to your favorites."; }
@@ -214,14 +235,25 @@ StringTable resource
 		{ String _name = "MapOverlaysTabTraffic";		String _text = "Traffic"; }
 		{ String _name = "MapOverlaysTabCitizens";		String _text = "Homes"; }
 		{ String _name = "MapOverlaysTabNatural";		String _text = "Nature"; }
+		{ String _name = "MapOverlaysTabLand";			String _text = "Land"; }
 		{ String _name = "MapOverlaysTabMapTip";			String _text = "The map as the game draws it, with no overlay."; }
 		{ String _name = "MapOverlaysTabProductionTip";	String _text = "Where goods were made: the items produced on each spot over the last months."; }
 		{ String _name = "MapOverlaysTabConsumptionTip";	String _text = "Where goods were used: eaten, burned, worked into other goods or built with, over the last months."; }
 		{ String _name = "MapOverlaysTabStockTip";		String _text = "Where goods are now: storage, stockpiles, markets and homes."; }
 		{ String _name = "MapOverlaysTabServicesTip";	String _text = "Where a service reaches: brighter where several buildings of the kind overlap."; }
 		{ String _name = "MapOverlaysTabTrafficTip";		String _text = "Where citizens walk: footsteps over the last months."; }
+		{ String _name = "MapOverlaysTripAll";			String _text = "All"; }
+		{ String _name = "MapOverlaysTripWork";			String _text = "To work"; }
+		{ String _name = "MapOverlaysTripHome";			String _text = "To home"; }
+		{ String _name = "MapOverlaysTripAllTip";		String _text = "Every footstep."; }
+		{ String _name = "MapOverlaysTripWorkTip";		String _text = "Only citizens walking to their workplace. Long bright trails are long commutes."; }
+		{ String _name = "MapOverlaysTripHomeTip";		String _text = "Only citizens walking back to their home."; }
 		{ String _name = "MapOverlaysTabCitizensTip";	String _text = "How homes fare: the residents' happiness, health, food, warmth or age."; }
 		{ String _name = "MapOverlaysTabNaturalTip";		String _text = "Where the natural resources are: trees, stone, iron, wildlife and fish."; }
+		{ String _name = "MapOverlaysTabLandTip";		String _text = "Where a building can stand: open ground, ground to clear first, and water, slopes and mountain that take none."; }
+		{ String _name = "MapOverlaysLandOpen";			String _text = "Buildable"; }
+		{ String _name = "MapOverlaysLandClearing";		String _text = "Buildable once cleared"; }
+		{ String _name = "MapOverlaysLandUnbuildable";	String _text = "Not buildable"; }
 		{ String _name = "MapOverlaysCategoryLabel";		String _text = "Goods"; }
 		{ String _name = "MapOverlaysResourceLabel";		String _text = "Item"; }
 		{ String _name = "MapOverlaysKindLabel";			String _text = "Show"; }

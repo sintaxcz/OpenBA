@@ -89,6 +89,7 @@ struct Fixes {
     bool minimap_outline_clip = true;   // docs/retail_bugs.md §31, src/ext/minimap_outline_clip/: UI only, the minimap's camera outline keeps every side when a corner lies off the map
     bool stream_free_wait  = true;   // review S-027 (engine seam Audio::Device::_extFixStreamFreeWait): a streamed sound freed while its stream pass runs waits for the pass, so the worker reads no freed seek table
     bool decal_fog_order   = true;   // docs/retail_bugs.md §32, src/render/common/decal_fog/ (backend seam DecalFogBackend::SetFixFlag): render only, next start; the decal pixel programs tint, then fog
+    bool priority_after_load = true;   // docs/retail_bugs.md §34, src/ext/priority_after_load/ (seam WorkScheduler::Serialize, goals_serialize.cpp): sim-visible; a load rebuilds the queue-order tree, so Increase Priority ranks ahead of the priorities given before the save
     bool shadow_zoom_pulse = true;   // docs/retail_bugs.md §33, SunLight::_extSteadySunBox (sun_camera.cpp): render only, live; the sun box's size steps on a ladder, so a zoom does not move the shadow grid every frame
 };
 
@@ -103,8 +104,14 @@ struct Extensions {
     bool fps_counter = false;  // class A: src/ext/fps_counter/, FrameLimiter::g_extGameFrame (docs/extensions/handins/FPSCOUNTER.md)
     // class A: src/ext/building_finder/ (docs/extensions/handins/BUILDINGFINDER.md)
     bool building_finder = false;
+    // class A: src/ext/storage_metrics/, a Storage tab in the Town Hall window (docs/extensions/handins/STORAGEMETRICS.md)
+    bool storage_metrics = false;
     // class A: src/ext/dynamic_professions/ (docs/extensions/handins/DYNAMICPROFESSIONS.md)
     bool dynamic_professions = false;
+    // class A, live: src/ext/road_upgrade/, a drag tool in the toolbar's roads group (docs/extensions/handins/ROADUPGRADE.md)
+    bool road_upgrade = false;
+    // class A, live: src/ext/radius_all/, a Shift+click in EditTool::OnKey (docs/extensions/handins/RADIUSALL.md)
+    bool radius_all = false;
     bool tool_names = false;   // class C: src/ext/tool_names/ (docs/extensions/handins/TOOLNAMES.md)
     bool better_camera = false; // class B: src/ext/better_camera/ (docs/extensions/handins/BETTERCAM.md): zoom range 6 .. 200 ("Wider zoom")
     bool camera_angle = false;  // class A, live: src/ext/camera_angle/, the far pitch pair in PlayerToolManager::UpdateCamera (docs/extensions/handins/CAMERAANGLE.md)
@@ -144,6 +151,12 @@ struct Extensions {
     // class C: src/ext/item_limits/ (docs/extensions/handins/ITEMLIMITS.md); a town-wide limit per item, set
     // in a workshop's panel
     bool item_limits = false;
+    // class C: src/ext/trader_request/ (docs/extensions/handins/TRADERREQUEST.md); a trading post asks for one
+    // trader, whose goods then cost double
+    bool trader_request = false;
+    // class B: src/ext/river_channel/ (docs/extensions/handins/RIVERCHANNEL.md); a new map's thin rivers get
+    // a channel at least two tiles wide
+    bool river_channel = false;
     // class B: src/ext/terrain_edit/ (docs/extensions/handins/TERRAINEDIT.md); a brush tool that edits the
     // terrain under the mouse
     bool terrain_edit = false;

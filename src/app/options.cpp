@@ -347,6 +347,9 @@ void OptionsInit() {
     o.panelHoldFrame        = Raw("BANISHED_PANEL_HOLD_FRAME");
     o.panelHoldClick        = Raw("BANISHED_PANEL_HOLD_CLICK");
     o.panelHoldClickEvery   = Raw("BANISHED_PANEL_HOLD_CLICK_EVERY");
+    o.panelHoldTab          = Raw("BANISHED_PANEL_HOLD_TAB");
+    o.templateDump          = Raw("BANISHED_TEMPLATE_DUMP");
+    o.panelHoldReopen       = Raw("BANISHED_PANEL_HOLD_REOPEN");
 
     o.mouseInject  = Raw("BANISHED_MOUSE_INJECT");
     o.mouseHold    = Raw("BANISHED_MOUSE_HOLD");
@@ -402,6 +405,7 @@ void OptionsInit() {
 
     o.cellDump  = Raw("BANISHED_CELL_DUMP");
     o.cellTrace = On("BANISHED_CELL_TRACE");
+    o.waterDump = Raw("BANISHED_WATER_DUMP");
 
     // The stress town rewrites the run's world setup, so it goes LAST — and it
     // is the only thing in the process that writes the environment.

@@ -249,6 +249,7 @@ void InitText() {
     Register("Dialog/RestrictedFoodsPage", &ProvideText, nullptr);
     Register("Dialog/ItemPriorityPage", &ProvideText, nullptr);
     Register("Dialog/ItemLimitsPanel", &ProvideText, nullptr);
+    Register("Dialog/TraderRequestPanel", &ProvideText, nullptr);
     Register("Dialog/TerrainEditPage", &ProvideText, nullptr);
     Register("Dialog/TouchControls", &ProvideText, nullptr);
     Register("Dialog/TouchPointer", &ProvideText, nullptr);
@@ -259,6 +260,7 @@ void InitText() {
     Register("Dialog/FamilyTreeSummary", &ProvideText, nullptr);
     Register("Dialog/ShowGridPage", &ProvideText, nullptr);
     Register("Dialog/FpsCounterPage", &ProvideText, nullptr);
+    Register("Dialog/StorageMetricsTab", &ProvideText, nullptr);
     Register("Dialog/BuildingFinderPage", &ProvideText, nullptr);
     Register("Dialog/FavoritesWindow", &ProvideText, nullptr);
     Register("Dialog/ProfessionsWindow", &ProvideText, nullptr);

@@ -24,7 +24,7 @@
 #   cmake --build build/linux -t unit && build/linux/unit
 #   cmake --build build/linux -t OpenBA
 cmake_minimum_required(VERSION 3.20)
-project(banished_reimpl VERSION 1.0.2 LANGUAGES CXX)
+project(banished_reimpl VERSION 1.0.3 LANGUAGES CXX)
 # OpenBA version shown beside the retail version in the main / pause menu's BuildId
 # overlay (src/game/Dialog/mainmenudialog.cpp). Bump here to cut a release (README "Versioning").
 add_compile_definitions(OPENBA_VERSION="${PROJECT_VERSION}")
@@ -318,6 +318,7 @@ set(EXT_RSC_SOURCES
   ${CMAKE_SOURCE_DIR}/src/ext/ui/Dialog/RestrictedFoodsPage.rsc
   ${CMAKE_SOURCE_DIR}/src/ext/ui/Dialog/ItemPriorityPage.rsc
   ${CMAKE_SOURCE_DIR}/src/ext/ui/Dialog/ItemLimitsPanel.rsc
+  ${CMAKE_SOURCE_DIR}/src/ext/ui/Dialog/TraderRequestPanel.rsc
   ${CMAKE_SOURCE_DIR}/src/ext/ui/Dialog/TerrainEditPage.rsc
   ${CMAKE_SOURCE_DIR}/src/ext/ui/Dialog/TouchControls.rsc
   ${CMAKE_SOURCE_DIR}/src/ext/ui/Dialog/TouchPointer.rsc
@@ -328,6 +329,7 @@ set(EXT_RSC_SOURCES
   ${CMAKE_SOURCE_DIR}/src/ext/ui/Dialog/FamilyTreeSummary.rsc
   ${CMAKE_SOURCE_DIR}/src/ext/ui/Dialog/ShowGridPage.rsc
   ${CMAKE_SOURCE_DIR}/src/ext/ui/Dialog/FpsCounterPage.rsc
+  ${CMAKE_SOURCE_DIR}/src/ext/ui/Dialog/StorageMetricsTab.rsc
   ${CMAKE_SOURCE_DIR}/src/ext/ui/Dialog/BuildingFinderPage.rsc
   ${CMAKE_SOURCE_DIR}/src/ext/ui/Dialog/FavoritesWindow.rsc
   ${CMAKE_SOURCE_DIR}/src/ext/ui/Dialog/FullscreenMode.rsc

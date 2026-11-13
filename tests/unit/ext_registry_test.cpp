@@ -50,6 +50,7 @@ static bool BcOnByDefault(const char* id) {
         "walk_on_ice", "map_overlays",
         "better_camera",   // Wider zoom: ON on a desktop (the Android first run seeds it off)
         "work_cand",       // ruled ON 2026-11-09 (WORKCAND.md)
+        "trader_request",  // ruled ON 2026-11-11 (TRADERREQUEST.md): a post with no request is retail's
     };
     for (const char* on : kBcOn)
         if (std::strcmp(id, on) == 0) return true;
@@ -69,7 +70,7 @@ UNIT_TEST(ext_registry_table_shape) {
                            "autotrade_free_goods", "input_fetch_room", "stranded_wade",
                            "debug_spawn_origin", "statusbar_empty_town",
                            "stream_free_wait", "minimap_outline_clip", "decal_fog_order",
-                           "shadow_zoom_pulse"}) {
+                           "shadow_zoom_pulse", "priority_after_load"}) {
         const Ext::Entry& e = E(id);
         CHECK(e.tier == Ext::Tier::Fix);
         CHECK(e.cls == Ext::Class::None);
@@ -94,6 +95,7 @@ UNIT_TEST(ext_registry_table_shape) {
         // show_grid is class A but changes how the map looks: the player's call, OFF (no_fog was too; ON since 1.0.3 at retail's fog).
         // fps_counter is class A but adds the toolbar's extension button: the player's call, OFF (FPSCOUNTER).
         // building_finder is class A but adds a tab to the extension window: OFF (BUILDINGFINDER).
+        // storage_metrics is class A but adds a tab to the Town Hall window: OFF (STORAGEMETRICS).
         // dynamic_professions is class A but replaces the Professions window: OFF (DYNAMICPROFESSIONS).
         // texture_quality is class A but lowers texture detail: the player's call, OFF (TEXQUALITY).
         // phone_menu is class A but moves the desktop menu: OFF; the Android first run turns it on (PHONEMENU).
@@ -106,6 +108,7 @@ UNIT_TEST(ext_registry_table_shape) {
                                   std::strcmp(e.id, "show_grid") != 0 &&
                                   std::strcmp(e.id, "fps_counter") != 0 &&
                                   std::strcmp(e.id, "building_finder") != 0 &&
+                                  std::strcmp(e.id, "storage_metrics") != 0 &&
                                   std::strcmp(e.id, "dynamic_professions") != 0 &&
                                   std::strcmp(e.id, "texture_quality") != 0 &&
                                   std::strcmp(e.id, "phone_menu") != 0 && std::strcmp(e.id, "fps_cap") != 0 &&
